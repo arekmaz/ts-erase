@@ -2428,6 +2428,92 @@ describe("eraseTsTypes", () => {
       });
     });
 
+    describe("object return types", () => {
+      it("erases an object return type on a function", () => {
+        expectErasure(
+          `function f(): { a: string } { return x }`,
+          `function f()                { return x }`,
+        );
+      });
+
+      it("erases a union ending in an object return type", () => {
+        expectErasure(
+          `function f(): A | { a: string } { return x }`,
+          `function f()                    { return x }`,
+        );
+      });
+
+      it("erases an object return type on a method", () => {
+        expectErasure(
+          `class C { foo(): { a: string } { return x } }`,
+          `class C { foo()                { return x } }`,
+        );
+      });
+
+      it("erases an object return type on an arrow function", () => {
+        expectErasure(
+          `const f = (): { a: string } => x`,
+          `const f = ()                => x`,
+        );
+      });
+
+      it("erases a function overload returning an object type", () => {
+        expectErasure(
+          `function f(): { a: string };\nfunction f() {}`,
+          `;                          ;\nfunction f() {}`,
+        );
+      });
+
+      it("erases a method overload returning a union with an object", () => {
+        expectErasure(
+          `class C { foo(): A | { a: string }; foo() {} }`,
+          `class C { ;                         foo() {} }`,
+        );
+      });
+
+      it("does not treat an object after a ternary colon as a type", () => {
+        const input = `const y = c ? f({ a }) : { b }`;
+        expectErasure(input, input);
+      });
+    });
+
+    describe("class header generics", () => {
+      it("erases a type parameter constrained by an object type", () => {
+        expectErasure(
+          `class C<T extends { a: string }> {}`,
+          `class C                          {}`,
+        );
+      });
+
+      it("erases an object type argument on the base class", () => {
+        expectErasure(
+          `class C extends Base<{ a: 1 }> { x = 1 }`,
+          `class C extends Base           { x = 1 }`,
+        );
+      });
+
+      it("erases an object type argument on a heritage call", () => {
+        expectErasure(
+          `class C extends mixin<{ a: 1 }>(Base) {}`,
+          `class C extends mixin          (Base) {}`,
+        );
+      });
+    });
+
+    describe("members named like statement keywords", () => {
+      it("keeps fields and methods named after keywords", () => {
+        const input = `class C { interface = 1; declare = 2; declare() {} import() {} }`;
+        expectErasure(input, input);
+      });
+
+      it("keeps a keyword-named field after a modifier", () => {
+        expectErasure(
+          `class C { static interface = 1; readonly function = 2 }`,
+          `class C { static interface = 1;          function = 2 }`,
+        );
+      });
+    });
+
     describe("class heritage", () => {
       it("erases implements with several interfaces", () => {
         expectErasure(

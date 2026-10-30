@@ -347,7 +347,7 @@ function isTernaryColon(source: string, colonPos: number): boolean {
       }
       return j < colonPos;
     }
-    if (ch === ";" || ch === "{" || ch === "}") {
+    if (depth === 0 && (ch === ";" || ch === "{" || ch === "}")) {
       return false;
     }
     i--;
@@ -564,6 +564,11 @@ function getTypeAnnotationTerminators(
 
 const closerFor: Record<string, string> = { "<": ">", "(": ")", "[": "]" };
 
+function isAfterTypeOperator(source: string, pos: number): boolean {
+  const prev = prevNonWhitespace(source, pos);
+  return prev === "|" || prev === "&";
+}
+
 function findReturnTypeEnd(source: string, pos: number): number {
   let p = pos;
   while (p < source.length) {
@@ -573,6 +578,10 @@ function findReturnTypeEnd(source: string, pos: number): number {
       continue;
     }
     const ch = source[p];
+    if (ch === "{" && (p === pos || isAfterTypeOperator(source, p))) {
+      p = scanTypeExpression(source, p + 1, "") + 1;
+      continue;
+    }
     if (ch === "{") {
       return p;
     }
@@ -701,7 +710,7 @@ function isFunctionOverload(source: string, pos: number): boolean {
   }
   p = skipWhitespace(source, p);
   if (p < len && source[p] === ":") {
-    p = scanTypeExpression(source, p + 1, ";{\n");
+    p = findSignatureTerminator(source, skipLeadingObjectType(source, p + 1));
   }
   p = skipWhitespace(source, p);
   return p < len && source[p] === ";";
@@ -857,6 +866,15 @@ const classModifiers = new Set([
   "static",
 ]);
 
+const statementKeywords = new Set([
+  "declare",
+  "export",
+  "function",
+  "import",
+  "interface",
+  "type",
+]);
+
 function isWordStart(source: string, pos: number): boolean {
   return pos === 0 || !isIdentChar(source[pos - 1]);
 }
@@ -904,6 +922,26 @@ function findClassBodyStart(source: string, pos: number): number {
     p++;
   }
   return p;
+}
+
+function eraseClassHeaderGenerics(
+  chars: Array<string>,
+  source: string,
+  pos: number,
+  bodyStart: number,
+): void {
+  let p = scanTypeExpression(source, pos, "<{");
+  while (p < bodyStart) {
+    const isGeneric = source[p] === "<";
+    const close = scanTypeExpression(source, p + 1, isGeneric ? ">" : "");
+    if (close >= source.length) {
+      return;
+    }
+    if (isGeneric) {
+      blankRange(chars, p, close + 1, false);
+    }
+    p = scanTypeExpression(source, close + 1, "<{");
+  }
 }
 
 function isAtClassBodyLevel(
@@ -1049,6 +1087,17 @@ function skipLeadingObjectType(source: string, pos: number): number {
   return scanTypeExpression(source, start + 1, "") + 1;
 }
 
+function findSignatureTerminator(source: string, pos: number): number {
+  const end = scanMemberType(source, pos, ";{\n");
+  if (source[end] === "{" && isAfterTypeOperator(source, end)) {
+    return findSignatureTerminator(
+      source,
+      scanTypeExpression(source, end + 1, "") + 1,
+    );
+  }
+  return end;
+}
+
 function findMethodParamsStart(source: string, pos: number): number {
   const afterName = skipInlineTrivia(source, skipMemberName(source, pos));
   const afterMarker = source[afterName] === "?" ? afterName + 1 : afterName;
@@ -1075,7 +1124,7 @@ function isMethodSignature(source: string, pos: number): boolean {
     return source[afterParams] !== "{";
   }
   const typeStart = skipLeadingObjectType(source, afterParams + 1);
-  const typeEnd = scanMemberType(source, typeStart, ";{\n");
+  const typeEnd = findSignatureTerminator(source, typeStart);
   return source[skipWhitespace(source, typeEnd)] !== "{";
 }
 
@@ -1101,7 +1150,8 @@ function eraseMemberTypeAnnotation(
   if (source[pos] === "[") {
     return pos;
   }
-  const afterName = skipInlineTrivia(source, skipMemberName(source, pos));
+  const nameEnd = skipMemberName(source, pos);
+  const afterName = skipInlineTrivia(source, nameEnd);
   const isMarked = source[afterName] === "?" || source[afterName] === "!";
   const afterMarker = isMarked ? afterName + 1 : afterName;
   const colon = skipInlineTrivia(source, afterMarker);
@@ -1115,7 +1165,7 @@ function eraseMemberTypeAnnotation(
     blankRange(chars, afterName, afterMarker, false);
     return afterMarker;
   }
-  return pos;
+  return statementKeywords.has(source.slice(pos, nameEnd)) ? nameEnd : pos;
 }
 
 function eraseClassMember(
@@ -1390,7 +1440,9 @@ export function eraseTsTypes(source: string): string {
     }
 
     if (matchWord(source, pos, "class") && isClassKeyword(source, pos)) {
-      classBodyStarts.add(findClassBodyStart(source, pos + 5));
+      const bodyStart = findClassBodyStart(source, pos + 5);
+      classBodyStarts.add(bodyStart);
+      eraseClassHeaderGenerics(chars, source, pos + 5, bodyStart);
       pos += 5;
       continue;
     }
