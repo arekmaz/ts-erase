@@ -43,7 +43,9 @@ The browser dependencies are loaded from URL's - I chose to use solid-js with ta
 
 The core primitive. Takes TypeScript source code and returns JavaScript with all type-level syntax replaced by spaces. Output length always equals input length. Newlines are preserved.
 
-Handles: type annotations, interfaces, type aliases, generics, `as` / `satisfies` casts, `import type`, `export type`, `declare` statements, non-null assertions.
+Handles: type annotations, interfaces, type aliases, generics, `as` / `satisfies` casts, `import type`, `export type`, `declare` statements, non-null assertions, class modifiers (`public`, `private`, `protected`, `readonly`, `override`, `abstract`, `declare`).
+
+Constructor parameter properties (`constructor(private x: string)`) need generated code, so they are left in place and fail as a syntax error.
 
 ```ts
 import { eraseTsTypes } from "ts-serve";
@@ -116,6 +118,9 @@ npm run todos   # start the example app
 | `value as string`                 | `value          `                 |
 | `obj!.prop`                       | `obj .prop`                       |
 | `fn<string>(x)`                   | `fn        (x)`                   |
+| `static readonly x = 1`           | `static          x = 1`           |
+| `abstract class A {}`             | `         class A {}`             |
+| `abstract foo(): void;`           | `;                    `           |
 
 Every output is exactly the same length as the input. Every newline stays in place.
 

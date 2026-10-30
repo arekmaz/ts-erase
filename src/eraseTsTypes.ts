@@ -842,6 +842,207 @@ function eraseOneTypeSpecifier(
   return identEnd;
 }
 
+type ClassBody = { braceDepth: number; parenDepth: number };
+
+type ClassModifier = { word: string; start: number; end: number; next: number };
+
+const classModifiers = new Set([
+  "public",
+  "private",
+  "protected",
+  "readonly",
+  "abstract",
+  "override",
+  "declare",
+  "static",
+]);
+
+function isWordStart(source: string, pos: number): boolean {
+  return pos === 0 || !isIdentChar(source[pos - 1]);
+}
+
+function skipInlineTrivia(source: string, pos: number): number {
+  while (pos < source.length) {
+    if (source[pos] === " " || source[pos] === "\t") {
+      pos++;
+      continue;
+    }
+    if (source.startsWith("/*", pos)) {
+      pos = skipBlockComment(source, pos);
+      continue;
+    }
+    return pos;
+  }
+  return pos;
+}
+
+function isClassKeyword(source: string, pos: number): boolean {
+  if (!isWordStart(source, pos) || isAfterDot(source, pos)) {
+    return false;
+  }
+  const next = skipWhitespace(source, pos + 5);
+  if (next >= source.length) {
+    return false;
+  }
+  return (
+    isIdentChar(source[next]) || source[next] === "{" || source[next] === "<"
+  );
+}
+
+function isAtClassBodyLevel(
+  classBodies: Array<ClassBody>,
+  braceDepth: number,
+  parenDepth: number,
+): boolean {
+  const current = classBodies.at(-1);
+  return (
+    current !== undefined &&
+    current.braceDepth === braceDepth &&
+    current.parenDepth === parenDepth
+  );
+}
+
+function isClassMemberStart(source: string, pos: number): boolean {
+  let i = pos - 1;
+  while (i >= 0 && (source[i] === " " || source[i] === "\t")) {
+    i--;
+  }
+  return i >= 0 && "\n\r{;}/".includes(source[i]);
+}
+
+function canFollowModifier(source: string, pos: number): boolean {
+  if (pos >= source.length) {
+    return false;
+  }
+  return isIdentChar(source[pos]) || "#[*\"'".includes(source[pos]);
+}
+
+function readClassModifier(source: string, pos: number): ClassModifier | null {
+  let end = pos;
+  while (end < source.length && isIdentChar(source[end])) {
+    end++;
+  }
+  const word = source.slice(pos, end);
+  if (!classModifiers.has(word)) {
+    return null;
+  }
+  const next = skipInlineTrivia(source, end);
+  if (!canFollowModifier(source, next)) {
+    return null;
+  }
+  return { word, start: pos, end, next };
+}
+
+function scanClassModifiers(source: string, pos: number): Array<ClassModifier> {
+  const modifier = readClassModifier(source, pos);
+  if (modifier === null) {
+    return [];
+  }
+  return [modifier, ...scanClassModifiers(source, modifier.next)];
+}
+
+function isIndexSignature(source: string, pos: number): boolean {
+  if (source[pos] !== "[") {
+    return false;
+  }
+  const nameStart = skipWhitespace(source, pos + 1);
+  let nameEnd = nameStart;
+  while (nameEnd < source.length && isIdentChar(source[nameEnd])) {
+    nameEnd++;
+  }
+  return (
+    nameEnd > nameStart && source[skipWhitespace(source, nameEnd)] === ":"
+  );
+}
+
+function isBodilessMember(
+  source: string,
+  modifiers: Array<ClassModifier>,
+  memberStart: number,
+): boolean {
+  return (
+    isIndexSignature(source, memberStart) ||
+    modifiers.some(function isAmbient(modifier) {
+      return modifier.word === "abstract" || modifier.word === "declare";
+    })
+  );
+}
+
+function findClassMemberEnd(source: string, pos: number): number {
+  const end = scanTypeExpression(source, pos, ";\n");
+  if (end >= source.length) {
+    return end;
+  }
+  if (source[end] === ";") {
+    return end + 1;
+  }
+  if (source[end] !== "\n") {
+    return end;
+  }
+  const prevCh = prevNonWhitespace(source, end);
+  const nextCh = source[skipWhitespace(source, end + 1)];
+  if (":|&=,".includes(prevCh) || nextCh === "|" || nextCh === "&") {
+    return findClassMemberEnd(source, end + 1);
+  }
+  return end;
+}
+
+function skipMemberName(source: string, pos: number): number {
+  if (source[pos] === "'" || source[pos] === '"') {
+    return skipString(source, pos);
+  }
+  let end = source[pos] === "#" ? pos + 1 : pos;
+  while (end < source.length && isIdentChar(source[end])) {
+    end++;
+  }
+  return end;
+}
+
+function eraseMemberTypeAnnotation(
+  chars: Array<string>,
+  source: string,
+  pos: number,
+): number {
+  const afterName = skipInlineTrivia(source, skipMemberName(source, pos));
+  const isMarked = source[afterName] === "?" || source[afterName] === "!";
+  const afterMarker = isMarked ? afterName + 1 : afterName;
+  const colon = skipInlineTrivia(source, afterMarker);
+  if (source[colon] !== ":") {
+    blankRange(chars, afterName, afterMarker, false);
+    return afterMarker;
+  }
+  const typeStart = skipWhitespace(source, colon + 1);
+  const end = scanTypeExpression(source, typeStart, ",;=\n");
+  blankRange(chars, afterName, end, false);
+  return end;
+}
+
+function eraseClassModifiers(
+  chars: Array<string>,
+  source: string,
+  pos: number,
+): number {
+  const modifiers = scanClassModifiers(source, pos);
+  if (modifiers.length === 0) {
+    return pos;
+  }
+  const memberStart = modifiers[modifiers.length - 1].next;
+  if (isBodilessMember(source, modifiers, memberStart)) {
+    const end = findClassMemberEnd(source, memberStart);
+    blankRange(chars, pos, end, true);
+    return end;
+  }
+  const continuesPreviousLine =
+    source[memberStart] === "[" || source[memberStart] === "*";
+  for (const modifier of modifiers) {
+    if (modifier.word !== "static") {
+      const semiPrefix = continuesPreviousLine && modifier.start === pos;
+      blankRange(chars, modifier.start, modifier.end, semiPrefix);
+    }
+  }
+  return eraseMemberTypeAnnotation(chars, source, memberStart);
+}
+
 function enterTemplate(
   source: string,
   pos: number,
@@ -876,6 +1077,8 @@ export function eraseTsTypes(source: string): string {
   let parenDepth = 0;
   let braceDepth = 0;
   const templateStack: Array<number> = [];
+  const classBodyStarts = new Set<number>();
+  const classBodies: Array<ClassBody> = [];
 
   while (pos < len) {
     const opaque = skipOpaqueAt(source, pos);
@@ -903,6 +1106,9 @@ export function eraseTsTypes(source: string): string {
     }
     if (ch === "{") {
       braceDepth++;
+      if (classBodyStarts.has(pos)) {
+        classBodies.push({ braceDepth, parenDepth });
+      }
       pos++;
       continue;
     }
@@ -914,6 +1120,9 @@ export function eraseTsTypes(source: string): string {
         templateStack.pop();
         pos = enterTemplate(source, pos + 1, braceDepth, templateStack);
         continue;
+      }
+      if (classBodies.at(-1)?.braceDepth === braceDepth) {
+        classBodies.pop();
       }
       braceDepth--;
       pos++;
@@ -1066,22 +1275,29 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
+    if (matchWord(source, pos, "class") && isClassKeyword(source, pos)) {
+      classBodyStarts.add(scanTypeExpression(source, pos + 5, "{"));
+      pos += 5;
+      continue;
+    }
+
     if (
-      (matchWord(source, pos, "public") ||
-        matchWord(source, pos, "private") ||
-        matchWord(source, pos, "protected")) &&
-      !isAfterDot(source, pos) &&
-      braceDepth > 0
+      matchWord(source, pos, "abstract") &&
+      isWordStart(source, pos) &&
+      matchWord(source, skipInlineTrivia(source, pos + 8), "class")
     ) {
-      const kw = matchWord(source, pos, "public")
-        ? "public"
-        : matchWord(source, pos, "private")
-          ? "private"
-          : "protected";
-      const afterKw = skipWhitespace(source, pos + kw.length);
-      if (afterKw < len && (isIdentChar(source[afterKw]) || source[afterKw] === "#")) {
-        blankRange(chars, pos, pos + kw.length, false);
-        pos = pos + kw.length;
+      blankRange(chars, pos, pos + 8, false);
+      pos += 8;
+      continue;
+    }
+
+    if (
+      isAtClassBodyLevel(classBodies, braceDepth, parenDepth) &&
+      isClassMemberStart(source, pos)
+    ) {
+      const erased = eraseClassModifiers(chars, source, pos);
+      if (erased !== pos) {
+        pos = erased;
         continue;
       }
     }

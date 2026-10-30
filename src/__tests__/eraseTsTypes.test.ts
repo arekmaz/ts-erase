@@ -2048,6 +2048,253 @@ describe("eraseTsTypes", () => {
       });
     });
 
+    describe("class member modifiers", () => {
+      it("erases readonly on a field", () => {
+        expectErasure(
+          `class C { readonly x = 1 }`,
+          `class C {          x = 1 }`,
+        );
+      });
+
+      it("erases readonly and keeps static", () => {
+        expectErasure(
+          `class C { static readonly x: number = 1 }`,
+          `class C { static          x         = 1 }`,
+        );
+      });
+
+      it("erases access modifier with readonly", () => {
+        expectErasure(
+          `class C { private readonly x: string }`,
+          `class C {                  x         }`,
+        );
+      });
+
+      it("erases override on a method", () => {
+        expectErasure(
+          `class C extends B { override foo() {} }`,
+          `class C extends B {          foo() {} }`,
+        );
+      });
+
+      it("erases a full modifier chain", () => {
+        expectErasure(
+          `class C extends B { public static override readonly x = 1 }`,
+          `class C extends B {        static                   x = 1 }`,
+        );
+      });
+
+      it("erases readonly on a private field", () => {
+        expectErasure(
+          `class C { readonly #x = 1 }`,
+          `class C {          #x = 1 }`,
+        );
+      });
+
+      it("erases optional marker after a modifier", () => {
+        expectErasure(
+          `class C { readonly x?: number }`,
+          `class C {          x          }`,
+        );
+      });
+
+      it("erases definite assignment marker after a modifier", () => {
+        expectErasure(
+          `class C { private x!: number; y = 1 }`,
+          `class C {         x         ; y = 1 }`,
+        );
+      });
+
+      it("erases annotation on a quoted member name", () => {
+        expectErasure(
+          `class C { readonly "a"?: number = 1 }`,
+          `class C {          "a"          = 1 }`,
+        );
+      });
+
+      it("keeps a semicolon before a computed member", () => {
+        expectErasure(
+          `class C {\n  x = 1\n  readonly [k] = 2\n}`,
+          `class C {\n  x = 1\n  ;        [k] = 2\n}`,
+        );
+      });
+
+      it("keeps a semicolon before a generator member", () => {
+        expectErasure(
+          `class C { override *gen() {} }`,
+          `class C { ;        *gen() {} }`,
+        );
+      });
+
+      it("erases modifier after a line comment", () => {
+        expectErasure(
+          `class C {\n  // why?\n  readonly x = 1\n}`,
+          `class C {\n  // why?\n           x = 1\n}`,
+        );
+      });
+
+      it("erases modifier after a block comment", () => {
+        expectErasure(
+          `class C { /** doc */ readonly x = 1 }`,
+          `class C { /** doc */          x = 1 }`,
+        );
+      });
+
+      it("erases modifiers in nested classes", () => {
+        expectErasure(
+          `class A { m() { return class { readonly x = 1 } } readonly y = 2 }`,
+          `class A { m() { return class {          x = 1 } }          y = 2 }`,
+        );
+      });
+
+      it("erases modifiers in a class passed as an argument", () => {
+        expectErasure(
+          `f(class { readonly x = 1 })`,
+          `f(class {          x = 1 })`,
+        );
+      });
+
+      it("finds the class body past a heritage call", () => {
+        expectErasure(
+          `class C extends mixin({ a: 1 }) { readonly x = 1 }`,
+          `class C extends mixin({ a: 1 }) {          x = 1 }`,
+        );
+      });
+
+      it("erases a readonly index signature", () => {
+        expectErasure(
+          `class C { readonly [key: string]: number; x = 1 }`,
+          `class C { ;                               x = 1 }`,
+        );
+      });
+
+      it("erases modifier on a computed symbol member", () => {
+        expectErasure(
+          `class C { readonly [Symbol.iterator] = 1 }`,
+          `class C { ;        [Symbol.iterator] = 1 }`,
+        );
+      });
+
+      it("treats modifier words as member names", () => {
+        const input = `class C { readonly = 1; abstract() {} }`;
+        expectErasure(input, input);
+      });
+
+      it("does not treat a modifier followed by a newline as a modifier", () => {
+        const input = `class C {\n  readonly\n  x = 1\n}`;
+        expectErasure(input, input);
+      });
+
+      it("does not erase modifier words in a field initializer", () => {
+        expectErasure(
+          `class C { x = readonly as Foo }`,
+          `class C { x = readonly        }`,
+        );
+      });
+
+      it("does not erase modifier words outside class bodies", () => {
+        const input = `function f() { const readonly = 1; return readonly }`;
+        expectErasure(input, input);
+      });
+
+      it("does not erase modifier words in object literals", () => {
+        const input = `const o = { class: { readonly: 1, abstract: true } }`;
+        expectErasure(input, input);
+      });
+
+      it("preserves static blocks", () => {
+        const input = `class C { static { init() } }`;
+        expectErasure(input, input);
+      });
+
+      it("leaves constructor parameter properties for the runtime to reject", () => {
+        expectErasure(
+          `class C { constructor(private readonly x: string) {} }`,
+          `class C { constructor(private readonly x        ) {} }`,
+        );
+      });
+    });
+
+    describe("abstract classes", () => {
+      it("erases abstract before class", () => {
+        expectErasure(`abstract class A {}`, `         class A {}`);
+      });
+
+      it("erases abstract after export", () => {
+        expectErasure(`export abstract class A {}`, `export          class A {}`);
+      });
+
+      it("erases abstract after export default", () => {
+        expectErasure(
+          `export default abstract class {}`,
+          `export default          class {}`,
+        );
+      });
+
+      it("erases abstract in a class expression", () => {
+        expectErasure(
+          `const A = abstract class {}`,
+          `const A =          class {}`,
+        );
+      });
+
+      it("erases an abstract method and keeps concrete members", () => {
+        expectErasure(
+          `abstract class A { abstract foo(): void; bar() {} }`,
+          `         class A { ;                     bar() {} }`,
+        );
+      });
+
+      it("erases an abstract field before the closing brace", () => {
+        expectErasure(
+          `abstract class A { abstract x: number }`,
+          `         class A { ;                  }`,
+        );
+      });
+
+      it("erases an abstract member ended by a newline", () => {
+        expectErasure(
+          `abstract class A {\n  abstract foo(): void\n  bar() {}\n}`,
+          `         class A {\n  ;                   \n  bar() {}\n}`,
+        );
+      });
+
+      it("erases modifiers preceding abstract", () => {
+        expectErasure(
+          `abstract class A { protected abstract get x(): number; }`,
+          `         class A { ;                                   }`,
+        );
+      });
+
+      it("erases an abstract member with a multi-line union", () => {
+        expectErasure(
+          `abstract class A {\n  abstract x:\n    | string\n    | number\n  y = 1\n}`,
+          `         class A {\n  ;          \n            \n            \n  y = 1\n}`,
+        );
+      });
+
+      it("does not erase a variable named abstract", () => {
+        const input = `const abstract = 1`;
+        expectErasure(input, input);
+      });
+    });
+
+    describe("declare class fields", () => {
+      it("erases a declare field and keeps the closing brace", () => {
+        expectErasure(
+          `class C { declare x: string }`,
+          `class C { ;                 }`,
+        );
+      });
+
+      it("erases a declare field after another modifier", () => {
+        expectErasure(
+          `class C { public declare x: string; y = 1 }`,
+          `class C { ;                         y = 1 }`,
+        );
+      });
+    });
+
     describe("generic arrow after return/throw/yield", () => {
       it("erases generic arrow in return statement", () => {
         expectErasure(
