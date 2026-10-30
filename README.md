@@ -38,7 +38,7 @@ The aim is to stay simple, dependency-less and supported for as long as possible
 
 The TypeScript you write is already valid JavaScript with some annotations sprinkled in. The conventional approach — transpiling, bundling, generating source maps — adds a massive toolchain between your code and the browser, all to remove what amounts to whitespace-level decoration.
 
-ts-serve takes the opposite stance: types are metadata, not code. Strip them out, preserve every byte position and every newline, and serve the result as plain JavaScript. The output is character-for-character identical to the input except that type annotations become spaces. No AST, no source maps needed, no configuration. Your browser's devtools point at the right lines because the lines never moved, the code stays inspectable and discoverable.
+ts-serve takes the opposite stance: types are metadata, not code. Strip them out, preserve every byte position and every newline, and serve the result as plain JavaScript. The output is character-for-character identical to the input except that type annotations become spaces, with two small exceptions: an erased statement can start with `;` so the surrounding code still parses, and when a multi-line return type sits between `)` and `=>`, the `)` moves down to the line with the `=>`, because JavaScript doesn't allow a line break before `=>`. No AST, no source maps needed, no configuration. Your browser's devtools point at the right lines because the lines never moved, the code stays inspectable and discoverable.
 
 This is not a compiler. It is an eraser.
 
