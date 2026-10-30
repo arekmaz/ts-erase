@@ -3155,6 +3155,11 @@ describe("eraseTsTypes", () => {
         );
       });
 
+      it("keeps a ternary followed by an arrow in a later ternary", () => {
+        const input = `const a = b ? new C(d) : e\nconst f = g\n  ? (h) => { return h }\n  : i`;
+        expectErasure(input, input);
+      });
+
       it("keeps an arrow as the second branch of a ternary", () => {
         const input = `const a = b ? (c) : d => { return d }`;
         expectErasure(input, input);

@@ -431,7 +431,10 @@ function isArrowReturnInTernary(source: string, colonPos: number): boolean {
     return false;
   }
   const typeEnd = findReturnTypeEnd(source, skipWhitespace(source, colonPos + 1));
-  if (!source.startsWith("=>", typeEnd)) {
+  if (
+    !source.startsWith("=>", typeEnd) ||
+    source.slice(colonPos, typeEnd).includes("\n")
+  ) {
     return false;
   }
   const bodyStart = skipWhitespace(source, typeEnd + 2);
