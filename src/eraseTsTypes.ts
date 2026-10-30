@@ -1017,6 +1017,18 @@ function isCaseKeyword(
   );
 }
 
+function isAtCaseLabel(
+  caseLabel: NestingLevel | null,
+  braceDepth: number,
+  parenDepth: number,
+): boolean {
+  return (
+    caseLabel !== null &&
+    caseLabel.braceDepth === braceDepth &&
+    caseLabel.parenDepth === parenDepth
+  );
+}
+
 function popLevelAt(levels: Array<NestingLevel>, braceDepth: number): void {
   if (levels.at(-1)?.braceDepth === braceDepth) {
     levels.pop();
@@ -1371,11 +1383,7 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (
-      ch === ":" &&
-      caseLabel?.braceDepth === braceDepth &&
-      caseLabel.parenDepth === parenDepth
-    ) {
+    if (ch === ":" && isAtCaseLabel(caseLabel, braceDepth, parenDepth)) {
       caseLabel = null;
       pos++;
       continue;
