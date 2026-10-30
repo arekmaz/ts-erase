@@ -43,7 +43,7 @@ The browser dependencies are loaded from URL's - I chose to use solid-js with ta
 
 The core primitive. Takes TypeScript source code and returns JavaScript with all type-level syntax replaced by spaces. Output length always equals input length. Newlines are preserved.
 
-Handles: type annotations, interfaces, type aliases, generics, `as` / `satisfies` casts, `import type`, `export type`, `declare` statements, non-null assertions, class modifiers (`public`, `private`, `protected`, `readonly`, `override`, `abstract`, `declare`), class field annotations, `implements` clauses, method overload signatures.
+Handles: type annotations, interfaces, type aliases, generics, `as` / `satisfies` casts, `import type`, `export type`, `declare` statements, non-null assertions, class modifiers (`public`, `private`, `protected`, `readonly`, `override`, `abstract`, `declare`), class field annotations, `implements` clauses, method overload signatures, `this` parameters, type-only namespaces.
 
 Constructor parameter properties (`constructor(private x: string)`) need generated code, so they are left in place and fail as a syntax error.
 
