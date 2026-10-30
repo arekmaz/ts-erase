@@ -4,7 +4,8 @@ function isIdentChar(ch: string): boolean {
     (ch >= "A" && ch <= "Z") ||
     (ch >= "0" && ch <= "9") ||
     ch === "_" ||
-    ch === "$"
+    ch === "$" ||
+    (ch > "\u007f" && !/\s/.test(ch))
   );
 }
 
@@ -300,6 +301,9 @@ function scanImportStatement(source: string, pos: number): number {
   while (pos < source.length) {
     if (source[pos] === "'" || source[pos] === '"') {
       pos = skipString(source, pos);
+      if (source[pos] === ")") {
+        pos++;
+      }
       if (pos < source.length && source[pos] === ";") {
         return pos + 1;
       }
@@ -1031,9 +1035,15 @@ function findThisParamEnd(source: string, pos: number): number {
 }
 
 function skipTrivia(source: string, pos: number): number {
-  const next = skipWhitespace(source, pos);
-  const opaque = next < source.length ? skipOpaqueAt(source, next) : -1;
-  return opaque === -1 ? next : skipTrivia(source, opaque);
+  let next = skipWhitespace(source, pos);
+  while (next < source.length) {
+    const opaque = skipOpaqueAt(source, next);
+    if (opaque === -1) {
+      return next;
+    }
+    next = skipWhitespace(source, opaque);
+  }
+  return next;
 }
 
 function hasOnlyTypes(source: string, start: number, end: number): boolean {
@@ -1084,6 +1094,8 @@ const expressionKeywords = new Set([
 ]);
 
 const blockKeywords = new Set(["do", "else", "finally", "try"]);
+
+const controlKeywords = new Set(["for", "if", "while", "with"]);
 
 const wordsBeforeObjectType = new Set(["extends", "is", "keyof"]);
 
@@ -1203,15 +1215,52 @@ function readWordBefore(chars: Array<string>, end: number): string {
   return chars.slice(start, end + 1).join("");
 }
 
+function findOpenParen(chars: Array<string>, closeIndex: number): number {
+  let depth = 0;
+  let i = closeIndex;
+  while (i >= 0) {
+    if (chars[i] === ")") {
+      depth++;
+    }
+    if (chars[i] === "(") {
+      depth--;
+    }
+    if (depth === 0) {
+      return i;
+    }
+    i--;
+  }
+  return -1;
+}
+
+function isControlHeadEnd(chars: Array<string>, closeIndex: number): boolean {
+  let i = findOpenParen(chars, closeIndex) - 1;
+  while (i >= 0 && isWhitespace(chars[i])) {
+    i--;
+  }
+  return i >= 0 && controlKeywords.has(readWordBefore(chars, i));
+}
+
+function isAfterDecorator(chars: Array<string>, index: number): boolean {
+  let i = chars[index] === ")" ? findOpenParen(chars, index) - 1 : index;
+  while (i >= 0 && (isIdentChar(chars[i]) || chars[i] === ".")) {
+    i--;
+  }
+  return i >= 0 && chars[i] === "@";
+}
+
 function endsExpression(chars: Array<string>, index: number): boolean {
   const ch = chars[index];
+  if (ch === ")") {
+    return !isControlHeadEnd(chars, index);
+  }
   if (isIdentChar(ch)) {
     const word = readWordBefore(chars, index);
     return (
       !expressionKeywords.has(word) || chars[index - word.length] === "."
     );
   }
-  return ")]}\"'`".includes(ch);
+  return "]}\"'`".includes(ch);
 }
 
 function isObjectBrace(
@@ -1276,7 +1325,10 @@ function isNonNullAssertion(
   if (source.slice(prev, pos).includes("\n")) {
     return false;
   }
-  return chars[prev] === ")" || chars[prev] === "]" || (isIdentChar(chars[prev]) && endsExpression(chars, prev));
+  return (
+    (chars[prev] === ")" || chars[prev] === "]" || isIdentChar(chars[prev])) &&
+    endsExpression(chars, prev)
+  );
 }
 
 function findClassBodyStart(source: string, pos: number): number {
@@ -1414,6 +1466,9 @@ function isClassMemberStart(
   if ("{;}".includes(chars[prev])) {
     return true;
   }
+  if (prev < pos - 1 && isAfterDecorator(chars, prev)) {
+    return true;
+  }
   return (
     isPostfixExpressionEnd(chars[prev]) &&
     source.slice(prev, pos).includes("\n")
@@ -1470,12 +1525,9 @@ function scanMemberType(
   pos: number,
   terminators: string,
 ): number {
-  const end = scanTypeExpression(source, pos, terminators);
-  if (source[end] !== "\n") {
-    return end;
-  }
-  if (continuesTypeAcrossLine(source, end)) {
-    return scanMemberType(source, end + 1, terminators);
+  let end = scanTypeExpression(source, pos, terminators);
+  while (source[end] === "\n" && continuesTypeAcrossLine(source, end)) {
+    end = scanTypeExpression(source, end + 1, terminators);
   }
   return end;
 }

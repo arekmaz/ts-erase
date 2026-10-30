@@ -3345,6 +3345,20 @@ describe("eraseTsTypes", () => {
         );
       });
 
+      it("erases a modifier after a decorator call", () => {
+        expectErasure(
+          `class C { @dec() readonly x = 1 }`,
+          `class C { @dec()          x = 1 }`,
+        );
+      });
+
+      it("erases a modifier after a dotted decorator", () => {
+        expectErasure(
+          `class C { @a.b readonly x = 1 }`,
+          `class C { @a.b          x = 1 }`,
+        );
+      });
+
       it("erases a field type after a decorator call", () => {
         expectErasure(
           `class C { @dec() x: number = 1 }`,
@@ -3395,6 +3409,16 @@ describe("eraseTsTypes", () => {
           `if (a) /'/.test(b)\nconst c: D = 1`,
           `if (a) /'/.test(b)\nconst c    = 1`,
         );
+      });
+
+      it("keeps a negation after an if condition", () => {
+        const input = `if (a) !b()`;
+        expectErasure(input, input);
+      });
+
+      it("keeps division after a call", () => {
+        const input = `const a = f(b) / c / d`;
+        expectErasure(input, input);
       });
 
       it("keeps erasing after a regex that follows a while", () => {
