@@ -1410,7 +1410,12 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (matchWord(source, pos, "function") && !isAfterDot(source, pos) && isFunctionOverload(source, pos + 8)) {
+    if (
+      matchWord(source, pos, "function") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos) &&
+      isFunctionOverload(source, pos + 8)
+    ) {
       const start = pos;
       const end = findStatementEnd(source, pos + 8);
       blankRange(chars, start, end, true);
@@ -1418,7 +1423,11 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (matchWord(source, pos, "interface") && !isAfterDot(source, pos)) {
+    if (
+      matchWord(source, pos, "interface") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos)
+    ) {
       const start = pos;
       pos += 9;
       const end = findStatementEnd(source, pos);
@@ -1427,7 +1436,11 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (matchWord(source, pos, "type") && !isAfterDot(source, pos)) {
+    if (
+      matchWord(source, pos, "type") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos)
+    ) {
       const start = pos;
       pos += 4;
       const afterType = skipWhitespace(source, pos);
@@ -1451,7 +1464,7 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (matchWord(source, pos, "import")) {
+    if (matchWord(source, pos, "import") && isWordStart(source, pos)) {
       const importStart = pos;
       pos += 6;
       const afterImport = skipWhitespace(source, pos);
@@ -1474,7 +1487,7 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (matchWord(source, pos, "export")) {
+    if (matchWord(source, pos, "export") && isWordStart(source, pos)) {
       const exportStart = pos;
       pos += 6;
       const afterExport = skipWhitespace(source, pos);
@@ -1575,7 +1588,11 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (matchWord(source, pos, "declare") && !isAfterDot(source, pos)) {
+    if (
+      matchWord(source, pos, "declare") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos)
+    ) {
       const start = pos;
       const end = findStatementEnd(source, pos + 7);
       blankRange(chars, start, end, true);
@@ -1585,6 +1602,7 @@ export function eraseTsTypes(source: string): string {
 
     if (
       matchWord(source, pos, "as") &&
+      isWordStart(source, pos) &&
       !isAfterDot(source, pos) &&
       !isInsideImportExportBraces(source, pos)
     ) {
@@ -1595,7 +1613,11 @@ export function eraseTsTypes(source: string): string {
       }
     }
 
-    if (matchWord(source, pos, "satisfies") && !isAfterDot(source, pos)) {
+    if (
+      matchWord(source, pos, "satisfies") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos)
+    ) {
       const erased = tryErasePostfixKeyword(chars, source, pos, 9);
       if (erased !== pos) {
         pos = erased;

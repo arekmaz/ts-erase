@@ -2693,6 +2693,35 @@ describe("eraseTsTypes", () => {
       });
     });
 
+    describe("keywords at the end of identifiers", () => {
+      const preserved = [
+        `const deltas = parts`,
+        `canvas.getContext("2d")`,
+        `Flag.withAlias("w")`,
+        `$as(x)`,
+        `const myinterface = 1`,
+        `reimport(x)`,
+        `const unsatisfies = 1; unsatisfies.x`,
+        `const redeclare = 1`,
+        `const subtype = x`,
+        `reexport(x)`,
+      ];
+      for (const input of preserved) {
+        it(`preserves ${input}`, () => {
+          expectErasure(input, input);
+        });
+      }
+
+      it("preserves a name ending in type before an alias shape", () => {
+        const input = `subtype Foo = 1`;
+        expectErasure(input, input);
+      });
+
+      it("still erases a real cast after such a name", () => {
+        expectErasure(`deltas as Foo`, `deltas       `);
+      });
+    });
+
     describe("class header generics", () => {
       it("erases a type parameter constrained by an object type", () => {
         expectErasure(
