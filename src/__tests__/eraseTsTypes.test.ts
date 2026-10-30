@@ -2569,6 +2569,130 @@ describe("eraseTsTypes", () => {
       });
     });
 
+    describe("ternaries inside parentheses", () => {
+      const preserved = [
+        `foo(a ? b : c)`,
+        `foo(a ? 1 : 2)`,
+        `foo(a ? b.c : d)`,
+        `foo(x, a ? b : c)`,
+        `foo([a ? b : c])`,
+        `f((a ? b : c), d)`,
+        `if (a ? b : c) {}`,
+      ];
+      for (const input of preserved) {
+        it(`preserves ${input}`, () => {
+          expectErasure(input, input);
+        });
+      }
+
+      it("erases a parameter annotation inside a ternary branch", () => {
+        expectErasure(
+          `foo(a ? (x: string) => x : y)`,
+          `foo(a ? (x        ) => x : y)`,
+        );
+      });
+
+      it("erases parameters after an optional parameter", () => {
+        expectErasure(
+          `function f(a?: string, b: number) {}`,
+          `function f(a         , b        ) {}`,
+        );
+      });
+
+      it("erases parameters after a ternary default", () => {
+        expectErasure(
+          `(a = b ? c : d, e: T) => a`,
+          `(a = b ? c : d, e   ) => a`,
+        );
+      });
+
+      it("ignores a question mark in a comment between parameters", () => {
+        expectErasure(
+          `function f(// why?\n  b: string) {}`,
+          `function f(// why?\n  b        ) {}`,
+        );
+      });
+
+      it("ignores an apostrophe in a comment between parameters", () => {
+        expectErasure(
+          `function f(\n  // don't\n  b: string,\n): void {}`,
+          `function f(\n  // don't\n  b        ,\n)       {}`,
+        );
+      });
+    });
+
+    describe("case labels and switch bodies", () => {
+      it("erases the return type of an object method named case", () => {
+        expectErasure(
+          `const o = { case(x: string): void {} }`,
+          `const o = { case(x        )       {} }`,
+        );
+      });
+
+      it("finds the switch body past a comparison", () => {
+        const input = `switch (a < b) { case (x): { break } }`;
+        expectErasure(input, input);
+      });
+
+      it("tracks nested switches", () => {
+        const input = `switch (x) { case 1: switch (y) { case g(z): { break } } case 2: { break } }`;
+        expectErasure(input, input);
+      });
+
+      it("handles a switch inside a typed function", () => {
+        expectErasure(
+          `function f(x: A) { switch (x) { case g(y): { return 1 } default: return 2 } }`,
+          `function f(x   ) { switch (x) { case g(y): { return 1 } default: return 2 } }`,
+        );
+      });
+    });
+
+    describe("class header expressions", () => {
+      it("finds the body past a comparison in parentheses", () => {
+        expectErasure(
+          `class A extends (a < b ? C : D) { readonly x = 1 }`,
+          `class A extends (a < b ? C : D) {          x = 1 }`,
+        );
+      });
+
+      it("finds the body past a comparison in brackets", () => {
+        expectErasure(
+          `class A extends m[a < b ? 0 : 1] { readonly x = 1 }`,
+          `class A extends m[a < b ? 0 : 1] {          x = 1 }`,
+        );
+      });
+
+      it("finds the body past a parenthesized class", () => {
+        expectErasure(
+          `class A extends (class B<T> {}) { readonly x: T = 1 }`,
+          `class A extends (class B    {}) {          x    = 1 }`,
+        );
+      });
+
+      it("finds the body past a brace in a string", () => {
+        expectErasure(
+          `class A extends m("{") { readonly x = 1 }`,
+          `class A extends m("{") {          x = 1 }`,
+        );
+      });
+    });
+
+    describe("multi-line conditional type aliases", () => {
+      it("erases branches on their own lines", () => {
+        expectErasure(
+          `type A<T> = T extends string\n  ? (T & {})["a"]\n  : { b: T }\nconst x = 1`,
+          `;                           \n                 \n            \nconst x = 1`,
+        );
+      });
+
+      it("erases an extends clause on its own line", () => {
+        expectErasure(
+          `type A<T> = T\n  extends string ? 1 : 2\nconst x = 1`,
+          `;            \n                        \nconst x = 1`,
+        );
+      });
+    });
+
     describe("class header generics", () => {
       it("erases a type parameter constrained by an object type", () => {
         expectErasure(

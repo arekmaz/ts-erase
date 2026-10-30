@@ -318,10 +318,19 @@ function skipStringBackward(source: string, pos: number, quote: string): number 
   return pos;
 }
 
-function isTernaryColon(source: string, colonPos: number): boolean {
+function isTernaryColon(
+  source: string,
+  colonPos: number,
+  commentStarts: Map<number, number>,
+): boolean {
   let depth = 0;
   let i = colonPos - 1;
   while (i >= 0) {
+    const commentStart = commentStarts.get(i + 1);
+    if (commentStart !== undefined) {
+      i = commentStart - 1;
+      continue;
+    }
     const ch = source[i];
     if (ch === "'" || ch === '"') {
       i = skipStringBackward(source, i, ch) - 1;
@@ -347,7 +356,7 @@ function isTernaryColon(source: string, colonPos: number): boolean {
       }
       return j < colonPos;
     }
-    if (depth === 0 && (ch === ";" || ch === "{" || ch === "}")) {
+    if (depth === 0 && ",;{}".includes(ch)) {
       return false;
     }
     i--;
@@ -453,11 +462,12 @@ function isTypeAnnotationContext(
   colonPos: number,
   parenDepth: number,
   braceDepth: number,
+  commentStarts: Map<number, number>,
 ): boolean {
   const prev = prevNonWhitespace(source, colonPos);
   if (parenDepth > 0) {
     if (prev === "?" || prev === ")" || prev === "]") {
-      if (isTernaryColon(source, colonPos)) {
+      if (isTernaryColon(source, colonPos, commentStarts)) {
         return false;
       }
       return true;
@@ -471,10 +481,10 @@ function isTypeAnnotationContext(
     if (isInsideObjectLiteral(source, colonPos)) {
       return false;
     }
-    return true;
+    return !isTernaryColon(source, colonPos, commentStarts);
   }
   if (prev === ")" || prev === "]") {
-    if (isTernaryColon(source, colonPos)) {
+    if (isTernaryColon(source, colonPos, commentStarts)) {
       return false;
     }
     return true;
@@ -664,12 +674,15 @@ function findTypeAliasEnd(source: string, pos: number): number {
     }
     if (depth === 0 && ch === "\n") {
       const nextPos = skipWhitespace(source, pos + 1);
-      if (nextPos < source.length && (source[nextPos] === "|" || source[nextPos] === "&")) {
+      if (
+        nextPos < source.length &&
+        ("|&?:".includes(source[nextPos]) ||
+          matchWord(source, nextPos, "extends"))
+      ) {
         pos++;
         continue;
       }
-      const prevCh = prevNonWhitespace(source, pos);
-      if (prevCh === "=" || prevCh === "|" || prevCh === "&" || prevCh === ",") {
+      if ("=|&,?:".includes(prevNonWhitespace(source, pos))) {
         pos++;
         continue;
       }
@@ -867,7 +880,6 @@ const classModifiers = new Set([
 ]);
 
 const statementKeywords = new Set([
-  "case",
   "declare",
   "export",
   "function",
@@ -908,16 +920,47 @@ function isClassKeyword(source: string, pos: number): boolean {
   );
 }
 
+function skipBalanced(source: string, pos: number): number {
+  let depth = 0;
+  let p = pos;
+  while (p < source.length) {
+    const opaque = skipOpaqueAt(source, p);
+    if (opaque !== -1) {
+      p = opaque;
+      continue;
+    }
+    const ch = source[p];
+    if (ch === "`") {
+      p = skipTemplateLiteral(source, p);
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth++;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      depth--;
+    }
+    p++;
+    if (depth === 0) {
+      return p;
+    }
+  }
+  return p;
+}
+
 function findClassBodyStart(source: string, pos: number): number {
   let p = pos;
   while (p < source.length) {
-    p = scanTypeExpression(source, p, "c{");
+    p = scanTypeExpression(source, p, "c{([");
+    if (source[p] === "(" || source[p] === "[") {
+      p = skipBalanced(source, p);
+      continue;
+    }
     if (source[p] !== "c") {
       return p;
     }
     if (matchWord(source, p, "class") && isClassKeyword(source, p)) {
-      const nestedBody = findClassBodyStart(source, p + 5);
-      p = scanTypeExpression(source, nestedBody + 1, "") + 1;
+      p = skipBalanced(source, findClassBodyStart(source, p + 5));
       continue;
     }
     p++;
@@ -931,27 +974,53 @@ function eraseClassHeaderGenerics(
   pos: number,
   bodyStart: number,
 ): void {
-  let p = scanTypeExpression(source, pos, "<{");
+  let p = scanTypeExpression(source, pos, "<{([");
   while (p < bodyStart) {
-    const isGeneric = source[p] === "<";
-    const close = scanTypeExpression(source, p + 1, isGeneric ? ">" : "");
+    if (source[p] !== "<") {
+      p = scanTypeExpression(source, skipBalanced(source, p), "<{([");
+      continue;
+    }
+    const close = scanTypeExpression(source, p + 1, ">");
     if (close >= source.length) {
       return;
     }
-    if (isGeneric) {
-      blankRange(chars, p, close + 1, false);
-    }
-    p = scanTypeExpression(source, close + 1, "<{");
+    blankRange(chars, p, close + 1, false);
+    p = scanTypeExpression(source, close + 1, "<{([");
   }
 }
 
-function isCaseKeyword(source: string, pos: number): boolean {
+function isSwitchKeyword(source: string, pos: number): boolean {
   return (
-    matchWord(source, pos, "case") &&
+    matchWord(source, pos, "switch") &&
     isWordStart(source, pos) &&
     !isAfterDot(source, pos) &&
-    source[skipWhitespace(source, pos + 4)] !== ":"
+    source[skipWhitespace(source, pos + 6)] === "("
   );
+}
+
+function findSwitchBodyStart(source: string, pos: number): number {
+  const paramsStart = skipWhitespace(source, pos + 6);
+  return skipWhitespace(source, skipBalanced(source, paramsStart));
+}
+
+function isCaseKeyword(
+  source: string,
+  pos: number,
+  switchBodies: Array<NestingLevel>,
+  braceDepth: number,
+): boolean {
+  return (
+    switchBodies.at(-1)?.braceDepth === braceDepth &&
+    matchWord(source, pos, "case") &&
+    isWordStart(source, pos) &&
+    !isAfterDot(source, pos)
+  );
+}
+
+function popLevelAt(levels: Array<NestingLevel>, braceDepth: number): void {
+  if (levels.at(-1)?.braceDepth === braceDepth) {
+    levels.pop();
+  }
 }
 
 function isAtClassBodyLevel(
@@ -1235,8 +1304,9 @@ export function eraseTsTypes(source: string): string {
   let parenDepth = 0;
   let braceDepth = 0;
   const templateStack: Array<number> = [];
-  const classBodyStarts = new Set<number>();
+  const bodyStarts = new Map<number, Array<NestingLevel>>();
   const classBodies: Array<NestingLevel> = [];
+  const switchBodies: Array<NestingLevel> = [];
   const commentStarts = new Map<number, number>();
   let caseLabel: NestingLevel | null = null;
 
@@ -1281,9 +1351,7 @@ export function eraseTsTypes(source: string): string {
     }
     if (ch === "{") {
       braceDepth++;
-      if (classBodyStarts.has(pos)) {
-        classBodies.push({ braceDepth, parenDepth });
-      }
+      bodyStarts.get(pos)?.push({ braceDepth, parenDepth });
       pos++;
       continue;
     }
@@ -1296,9 +1364,8 @@ export function eraseTsTypes(source: string): string {
         pos = enterTemplate(source, pos + 1, braceDepth, templateStack);
         continue;
       }
-      if (classBodies.at(-1)?.braceDepth === braceDepth) {
-        classBodies.pop();
-      }
+      popLevelAt(classBodies, braceDepth);
+      popLevelAt(switchBodies, braceDepth);
       braceDepth--;
       pos++;
       continue;
@@ -1316,7 +1383,13 @@ export function eraseTsTypes(source: string): string {
 
     if (
       ch === ":" &&
-      isTypeAnnotationContext(source, pos, parenDepth, braceDepth)
+      isTypeAnnotationContext(
+        source,
+        pos,
+        parenDepth,
+        braceDepth,
+        commentStarts,
+      )
     ) {
       const terminators = getTypeAnnotationTerminators(source, pos, parenDepth);
       let start = pos;
@@ -1460,7 +1533,13 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (isCaseKeyword(source, pos)) {
+    if (isSwitchKeyword(source, pos)) {
+      bodyStarts.set(findSwitchBodyStart(source, pos), switchBodies);
+      pos += 6;
+      continue;
+    }
+
+    if (isCaseKeyword(source, pos, switchBodies, braceDepth)) {
       caseLabel = { braceDepth, parenDepth };
       pos += 4;
       continue;
@@ -1468,7 +1547,7 @@ export function eraseTsTypes(source: string): string {
 
     if (matchWord(source, pos, "class") && isClassKeyword(source, pos)) {
       const bodyStart = findClassBodyStart(source, pos + 5);
-      classBodyStarts.add(bodyStart);
+      bodyStarts.set(bodyStart, classBodies);
       eraseClassHeaderGenerics(chars, source, pos + 5, bodyStart);
       pos += 5;
       continue;
