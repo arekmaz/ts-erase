@@ -3228,6 +3228,183 @@ describe("eraseTsTypes", () => {
       });
     });
 
+    describe("type parameter modifiers", () => {
+      it("erases variance modifiers", () => {
+        expectErasure(
+          `class C<in out T> {}`,
+          `class C           {}`,
+        );
+      });
+
+      it("erases a const type parameter", () => {
+        expectErasure(
+          `function f<const T>(x: T) {}`,
+          `function f         (x   ) {}`,
+        );
+      });
+    });
+
+    describe("type-only return and annotation forms", () => {
+      it("erases an assertion predicate", () => {
+        expectErasure(
+          `function f(x): asserts x is string {}`,
+          `function f(x)                      {}`,
+        );
+      });
+
+      it("erases an assertion without a type", () => {
+        expectErasure(
+          `function f(x): asserts x {}`,
+          `function f(x)            {}`,
+        );
+      });
+
+      it("erases an abstract constructor type", () => {
+        expectErasure(
+          `let a: abstract new () => B = c`,
+          `let a                       = c`,
+        );
+      });
+
+      it("erases a unique symbol type", () => {
+        expectErasure(
+          `let a: unique symbol = b`,
+          `let a                = b`,
+        );
+      });
+    });
+
+    describe("class member forms", () => {
+      const preserved = [
+        `class C { accessor x = 1 }`,
+        `class C { static accessor x = 1 }`,
+      ];
+      for (const input of preserved) {
+        it(`preserves ${JSON.stringify(input)}`, () => {
+          expectErasure(input, input);
+        });
+      }
+
+      it("erases a modifier before accessor", () => {
+        expectErasure(
+          `class C { public accessor x: number = 1 }`,
+          `class C {        accessor x         = 1 }`,
+        );
+      });
+
+      it("erases the return type of a static async generator", () => {
+        expectErasure(
+          `class C { static async *gen(): T {} }`,
+          `class C { static async *gen()    {} }`,
+        );
+      });
+
+      it("erases a modifier before a static async generator", () => {
+        expectErasure(
+          `class C { public static async *gen() {} }`,
+          `class C {        static async *gen() {} }`,
+        );
+      });
+
+      it("erases the marker on an optional method with a body", () => {
+        expectErasure(
+          `class C { foo?(): void {} }`,
+          `class C { foo ()       {} }`,
+        );
+      });
+
+      it("erases an optional method without a body", () => {
+        expectErasure(
+          `class C { foo?(): void; bar() {} }`,
+          `class C { ;             bar() {} }`,
+        );
+      });
+    });
+
+    describe("generics on optional calls", () => {
+      it("erases type arguments after optional chaining", () => {
+        expectErasure(
+          `a?.b<T>()`,
+          `a?.b   ()`,
+        );
+      });
+
+      it("erases type arguments on an optional call", () => {
+        expectErasure(
+          `a?.<T>(b)`,
+          `a?.   (b)`,
+        );
+      });
+    });
+
+    describe("decorators", () => {
+      it("erases a modifier after a decorator on the same line", () => {
+        expectErasure(
+          `class C { @dec readonly x = 1 }`,
+          `class C { @dec          x = 1 }`,
+        );
+      });
+
+      it("erases a field type after a decorator call", () => {
+        expectErasure(
+          `class C { @dec() x: number = 1 }`,
+          `class C { @dec() x         = 1 }`,
+        );
+      });
+
+      it("erases a modifier after a decorator on its own line", () => {
+        expectErasure(
+          `class C {\n  @dec\n  readonly x = 1\n}`,
+          `class C {\n  @dec\n           x = 1\n}`,
+        );
+      });
+
+      it("erases a field type after a decorator on its own line", () => {
+        expectErasure(
+          `class C {\n  @dec()\n  x: number\n}`,
+          `class C {\n  @dec()\n  x        \n}`,
+        );
+      });
+    });
+
+    describe("syntax that cannot be erased", () => {
+      const preserved = [
+        `import a = require("b")`,
+        `export = a`,
+        `export import a = b.c`,
+        `enum A { B = 1 }`,
+        `const enum A { B }`,
+      ];
+      for (const input of preserved) {
+        it(`preserves ${JSON.stringify(input)}`, () => {
+          expectErasure(input, input);
+        });
+      }
+
+      it("erases a type-only import equals", () => {
+        expectErasure(
+          `import type a = require("b")`,
+          `;                           `,
+        );
+      });
+    });
+
+    describe("regular expressions after a closing paren", () => {
+      it("keeps erasing after a regex that follows an if", () => {
+        expectErasure(
+          `if (a) /'/.test(b)\nconst c: D = 1`,
+          `if (a) /'/.test(b)\nconst c    = 1`,
+        );
+      });
+
+      it("keeps erasing after a regex that follows a while", () => {
+        expectErasure(
+          `while (a) /"/.exec(b)\nconst c: D = 1`,
+          `while (a) /"/.exec(b)\nconst c    = 1`,
+        );
+      });
+    });
+
     describe("class header generics", () => {
       it("erases a type parameter constrained by an object type", () => {
         expectErasure(

@@ -27,6 +27,12 @@ function normalize(code: string): string {
   return code.replace(/[\s;]/g, "").replace(/,+}/g, "}");
 }
 
+function newlineOffsets(code: string): Array<number> {
+  return [...code.matchAll(/\n/g)].map(function toOffset(match) {
+    return match.index;
+  });
+}
+
 describe("parity with node's type stripper", () => {
   const files = directories.flatMap(function listFiles(directory) {
     return listTypeScriptFiles(join(root, directory));
@@ -40,6 +46,27 @@ describe("parity with node's type stripper", () => {
       assert.strictEqual(
         normalize(erased),
         normalize(stripTypeScriptTypes(source)),
+      );
+    });
+
+    it(`${file.slice(root.length)} keeps every newline in place`, () => {
+      const source = readFileSync(file, "utf8");
+      assert.deepStrictEqual(
+        newlineOffsets(eraseTsTypes(source)),
+        newlineOffsets(source),
+      );
+    });
+
+    it(`${file.slice(root.length)} is unchanged by a second erase`, () => {
+      const erased = eraseTsTypes(readFileSync(file, "utf8"));
+      assert.strictEqual(eraseTsTypes(erased), erased);
+    });
+
+    it(`${file.slice(root.length)} parses after erasing`, () => {
+      const erased = eraseTsTypes(readFileSync(file, "utf8"));
+      assert.strictEqual(
+        normalize(stripTypeScriptTypes(erased)),
+        normalize(erased),
       );
     });
   }
