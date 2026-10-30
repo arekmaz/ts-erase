@@ -552,12 +552,12 @@ function getTypeAnnotationTerminators(
   colonPos: number,
   parenDepth: number,
 ): string {
-  if (parenDepth > 0) {
-    return ",)=";
-  }
   const prev = prevNonWhitespace(source, colonPos);
   if (prev === ")") {
     return "{;=>";
+  }
+  if (parenDepth > 0) {
+    return ",)=";
   }
   return ",;=\n";
 }
@@ -851,7 +851,7 @@ function eraseOneTypeSpecifier(
   return identEnd;
 }
 
-type ClassBody = { braceDepth: number; parenDepth: number };
+type NestingLevel = { braceDepth: number; parenDepth: number };
 
 type ClassModifier = { word: string; start: number; end: number; next: number };
 
@@ -867,6 +867,7 @@ const classModifiers = new Set([
 ]);
 
 const statementKeywords = new Set([
+  "case",
   "declare",
   "export",
   "function",
@@ -944,8 +945,17 @@ function eraseClassHeaderGenerics(
   }
 }
 
+function isCaseKeyword(source: string, pos: number): boolean {
+  return (
+    matchWord(source, pos, "case") &&
+    isWordStart(source, pos) &&
+    !isAfterDot(source, pos) &&
+    source[skipWhitespace(source, pos + 4)] !== ":"
+  );
+}
+
 function isAtClassBodyLevel(
-  classBodies: Array<ClassBody>,
+  classBodies: Array<NestingLevel>,
   templateStack: Array<number>,
   braceDepth: number,
   parenDepth: number,
@@ -1226,8 +1236,9 @@ export function eraseTsTypes(source: string): string {
   let braceDepth = 0;
   const templateStack: Array<number> = [];
   const classBodyStarts = new Set<number>();
-  const classBodies: Array<ClassBody> = [];
+  const classBodies: Array<NestingLevel> = [];
   const commentStarts = new Map<number, number>();
+  let caseLabel: NestingLevel | null = null;
 
   while (pos < len) {
     if (
@@ -1289,6 +1300,16 @@ export function eraseTsTypes(source: string): string {
         classBodies.pop();
       }
       braceDepth--;
+      pos++;
+      continue;
+    }
+
+    if (
+      ch === ":" &&
+      caseLabel?.braceDepth === braceDepth &&
+      caseLabel.parenDepth === parenDepth
+    ) {
+      caseLabel = null;
       pos++;
       continue;
     }
@@ -1436,6 +1457,12 @@ export function eraseTsTypes(source: string): string {
         continue;
       }
       pos = afterExport;
+      continue;
+    }
+
+    if (isCaseKeyword(source, pos)) {
+      caseLabel = { braceDepth, parenDepth };
+      pos += 4;
       continue;
     }
 

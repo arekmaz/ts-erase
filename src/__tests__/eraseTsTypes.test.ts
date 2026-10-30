@@ -2477,6 +2477,98 @@ describe("eraseTsTypes", () => {
       });
     });
 
+    describe("return types inside calls", () => {
+      it("keeps the arrow body after a return type", () => {
+        expectErasure(
+          `arr.map((x): string => x)`,
+          `arr.map((x)         => x)`,
+        );
+      });
+
+      it("keeps later arguments after an arrow with a return type", () => {
+        expectErasure(
+          `f((x: string): number => x, 1)`,
+          `f((x        )         => x, 1)`,
+        );
+      });
+
+      it("erases a generic return type on an async arrow", () => {
+        expectErasure(
+          `f(async (x): Promise<string> => x)`,
+          `f(async (x)                  => x)`,
+        );
+      });
+
+      it("erases an object return type on an arrow", () => {
+        expectErasure(
+          `f((x): { a: string } => x)`,
+          `f((x)                => x)`,
+        );
+      });
+
+      it("keeps a function expression body", () => {
+        expectErasure(
+          `f(function (x): void {})`,
+          `f(function (x)       {})`,
+        );
+      });
+
+      it("keeps an object method body", () => {
+        expectErasure(
+          `f({ m(x): void { return 1 } })`,
+          `f({ m(x)       { return 1 } })`,
+        );
+      });
+
+      it("does not treat a ternary in a call as a return type", () => {
+        const input = `f(c ? g(x) : y)`;
+        expectErasure(input, input);
+      });
+    });
+
+    describe("case labels", () => {
+      it("keeps a block after a call in a case label", () => {
+        const input = `switch (x) { case f(y): { break } }`;
+        expectErasure(input, input);
+      });
+
+      it("keeps a block after a parenthesized case label", () => {
+        const input = `switch (x) { case (y): { break } }`;
+        expectErasure(input, input);
+      });
+
+      it("keeps a block after an indexed case label", () => {
+        const input = `switch (x) { case a[0]: { break } }`;
+        expectErasure(input, input);
+      });
+
+      it("erases types after a case label", () => {
+        expectErasure(
+          `switch (x) { case 1: f((y): void => y) }`,
+          `switch (x) { case 1: f((y)       => y) }`,
+        );
+      });
+
+      it("erases a return type after a comment mentioning case", () => {
+        expectErasure(
+          `// in case\nfunction f(): void {}`,
+          `// in case\nfunction f()       {}`,
+        );
+      });
+
+      it("does not treat case properties as labels", () => {
+        const input = `const o = { case: 1 }; o.case`;
+        expectErasure(input, input);
+      });
+
+      it("erases annotations after a field named case", () => {
+        expectErasure(
+          `class C { case = 1; x: number }`,
+          `class C { case = 1; x         }`,
+        );
+      });
+    });
+
     describe("class header generics", () => {
       it("erases a type parameter constrained by an object type", () => {
         expectErasure(
