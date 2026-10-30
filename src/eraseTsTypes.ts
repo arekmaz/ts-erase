@@ -4,7 +4,8 @@ function isIdentChar(ch: string): boolean {
     (ch >= "A" && ch <= "Z") ||
     (ch >= "0" && ch <= "9") ||
     ch === "_" ||
-    ch === "$"
+    ch === "$" ||
+    (ch > "\u007f" && !/\s/.test(ch))
   );
 }
 
@@ -172,6 +173,12 @@ function skipOpaqueAt(source: string, pos: number): number {
   return -1;
 }
 
+function skipTypeOpaqueAt(source: string, pos: number): number {
+  return source[pos] === "`"
+    ? skipTemplateLiteral(source, pos)
+    : skipOpaqueAt(source, pos);
+}
+
 function scanTypeExpression(
   source: string,
   pos: number,
@@ -179,7 +186,7 @@ function scanTypeExpression(
 ): number {
   let depth = 0;
   while (pos < source.length) {
-    const opaque = skipOpaqueAt(source, pos);
+    const opaque = skipTypeOpaqueAt(source, pos);
     if (opaque !== -1) {
       pos = opaque;
       continue;
@@ -223,14 +230,27 @@ function prevNonWhitespace(source: string, pos: number): string {
 
 
 function isAfterDot(source: string, pos: number): boolean {
-  return prevNonWhitespace(source, pos) === ".";
+  let i = pos - 1;
+  while (i >= 0 && isWhitespace(source[i])) {
+    i--;
+  }
+  if (i < 0 || source[i] !== ".") {
+    return false;
+  }
+  const isOnSameLine = !source.slice(i, pos).includes("\n");
+  return isOnSameLine || !isInLineComment(source, i);
+}
+
+function isInLineComment(source: string, pos: number): boolean {
+  const lineStart = source.lastIndexOf("\n", pos) + 1;
+  return source.slice(lineStart, pos).includes("//");
 }
 
 function findStatementEnd(source: string, pos: number): number {
   let depth = 0;
   let sawBrace = false;
   while (pos < source.length) {
-    const opaque = skipOpaqueAt(source, pos);
+    const opaque = skipTypeOpaqueAt(source, pos);
     if (opaque !== -1) {
       pos = opaque;
       continue;
@@ -281,6 +301,9 @@ function scanImportStatement(source: string, pos: number): number {
   while (pos < source.length) {
     if (source[pos] === "'" || source[pos] === '"') {
       pos = skipString(source, pos);
+      if (source[pos] === ")") {
+        pos++;
+      }
       if (pos < source.length && source[pos] === ";") {
         return pos + 1;
       }
@@ -307,36 +330,68 @@ function scanImportStatement(source: string, pos: number): number {
   return pos;
 }
 
+function isEscaped(source: string, pos: number): boolean {
+  let backslashes = 0;
+  while (pos - backslashes - 1 >= 0 && source[pos - backslashes - 1] === "\\") {
+    backslashes++;
+  }
+  return backslashes % 2 === 1;
+}
+
 function skipStringBackward(source: string, pos: number, quote: string): number {
   pos--;
-  while (pos >= 0 && source[pos] !== quote) {
-    if (source[pos] === "\\") {
-      pos--;
-    }
+  while (pos >= 0 && (source[pos] !== quote || isEscaped(source, pos))) {
     pos--;
   }
   return pos;
 }
 
-function isTernaryColon(source: string, colonPos: number): boolean {
+function isTernaryColon(
+  chars: Array<string>,
+  source: string,
+  colonPos: number,
+  commentStarts: Map<number, number>,
+): boolean {
   let depth = 0;
+  let pendingColons = 0;
+  let inTemplate = false;
   let i = colonPos - 1;
   while (i >= 0) {
-    const ch = source[i];
+    const commentStart = commentStarts.get(i + 1);
+    if (commentStart !== undefined) {
+      i = commentStart - 1;
+      continue;
+    }
+    const ch = chars[i];
+    if (ch === "`") {
+      inTemplate = !inTemplate;
+    }
+    if (inTemplate || ch === "`") {
+      i--;
+      continue;
+    }
     if (ch === "'" || ch === '"') {
       i = skipStringBackward(source, i, ch) - 1;
       continue;
     }
-    if (ch === ")" || ch === "]") {
+    if (ch === ")" || ch === "]" || ch === "}") {
       depth++;
       i--;
       continue;
     }
-    if (ch === "(" || ch === "[") {
+    if (ch === "(" || ch === "[" || ch === "{") {
       if (depth === 0) {
         return false;
       }
       depth--;
+      i--;
+      continue;
+    }
+    if (ch === ":" && depth === 0) {
+      pendingColons++;
+    }
+    if (ch === "?" && depth === 0 && pendingColons > 0) {
+      pendingColons--;
       i--;
       continue;
     }
@@ -347,12 +402,61 @@ function isTernaryColon(source: string, colonPos: number): boolean {
       }
       return j < colonPos;
     }
-    if (ch === ";" || ch === "{" || ch === "}") {
+    if (depth === 0 && (ch === "," || ch === ";")) {
+      return false;
+    }
+    if (
+      depth === 0 &&
+      ch === "\n" &&
+      isStatementBreak(chars, source, commentStarts, i)
+    ) {
       return false;
     }
     i--;
   }
   return false;
+}
+
+function isStatementBreak(
+  chars: Array<string>,
+  source: string,
+  commentStarts: Map<number, number>,
+  newlinePos: number,
+): boolean {
+  const next = source[skipTrivia(source, newlinePos + 1)];
+  const prev = prevCodeIndex(chars, commentStarts, newlinePos);
+  return (
+    isIdentChar(next ?? "") && prev >= 0 && isPostfixExpressionEnd(chars[prev])
+  );
+}
+
+function isArrowReturnInTernary(source: string, colonPos: number): boolean {
+  if (prevNonWhitespace(source, colonPos) !== ")") {
+    return false;
+  }
+  const typeEnd = findReturnTypeEnd(source, skipWhitespace(source, colonPos + 1));
+  if (
+    !source.startsWith("=>", typeEnd) ||
+    source.slice(colonPos, typeEnd).includes("\n")
+  ) {
+    return false;
+  }
+  const bodyStart = skipWhitespace(source, typeEnd + 2);
+  if (source[bodyStart] !== "{") {
+    return false;
+  }
+  return source[skipTrivia(source, skipBalanced(source, bodyStart))] === ":";
+}
+
+function isDefiniteDeclaration(source: string, bangPos: number): boolean {
+  let i = bangPos - 1;
+  while (i >= 0 && isIdentChar(source[i])) {
+    i--;
+  }
+  while (i >= 0 && isWhitespace(source[i])) {
+    i--;
+  }
+  return i >= 2 && (source.slice(i - 2, i + 1) === "let" || source.slice(i - 2, i + 1) === "var");
 }
 
 function isDestructuringBrace(source: string, colonPos: number): boolean {
@@ -390,42 +494,6 @@ function isDestructuringBrace(source: string, colonPos: number): boolean {
   return ch === "(" || ch === ",";
 }
 
-function isInsideObjectLiteral(source: string, colonPos: number): boolean {
-  let braces = 0;
-  let parens = 0;
-  let brackets = 0;
-  let i = colonPos - 1;
-  while (i >= 0) {
-    const ch = source[i];
-    if (ch === "}") {
-      braces++;
-    } else if (ch === "{") {
-      if (braces === 0) {
-        return true;
-      }
-      braces--;
-    } else if (ch === ")") {
-      parens++;
-    } else if (ch === "(") {
-      if (parens === 0) {
-        return false;
-      }
-      parens--;
-    } else if (ch === "]") {
-      brackets++;
-    } else if (ch === "[") {
-      if (brackets === 0) {
-        return false;
-      }
-      brackets--;
-    } else if (ch === "'" || ch === '"') {
-      i = skipStringBackward(source, i, ch);
-    }
-    i--;
-  }
-  return false;
-}
-
 function isVarDeclComma(source: string, colonPos: number): boolean {
   let i = colonPos - 1;
   while (i >= 0) {
@@ -449,15 +517,24 @@ function isVarDeclComma(source: string, colonPos: number): boolean {
 }
 
 function isTypeAnnotationContext(
+  chars: Array<string>,
   source: string,
   colonPos: number,
   parenDepth: number,
   braceDepth: number,
+  commentStarts: Map<number, number>,
+  isInObject: boolean,
 ): boolean {
   const prev = prevNonWhitespace(source, colonPos);
+  if (parenDepth === 0 && isInObject && prev !== ")") {
+    return false;
+  }
+  if (prev === "!") {
+    return isDefiniteDeclaration(source, colonPos - 1);
+  }
   if (parenDepth > 0) {
     if (prev === "?" || prev === ")" || prev === "]") {
-      if (isTernaryColon(source, colonPos)) {
+      if (isTernaryColon(chars, source, colonPos, commentStarts)) {
         return false;
       }
       return true;
@@ -468,13 +545,10 @@ function isTypeAnnotationContext(
     if (!isIdentChar(prev)) {
       return false;
     }
-    if (isInsideObjectLiteral(source, colonPos)) {
-      return false;
-    }
-    return true;
+    return !isTernaryColon(chars, source, colonPos, commentStarts);
   }
   if (prev === ")" || prev === "]") {
-    if (isTernaryColon(source, colonPos)) {
+    if (isTernaryColon(chars, source, colonPos, commentStarts)) {
       return false;
     }
     return true;
@@ -544,7 +618,7 @@ function isTypeAnnotationContext(
     return false;
   }
 
-  return true;
+  return !isTernaryColon(chars, source, colonPos, commentStarts);
 }
 
 function getTypeAnnotationTerminators(
@@ -552,17 +626,50 @@ function getTypeAnnotationTerminators(
   colonPos: number,
   parenDepth: number,
 ): string {
-  if (parenDepth > 0) {
-    return ",)=";
-  }
   const prev = prevNonWhitespace(source, colonPos);
   if (prev === ")") {
     return "{;=>";
+  }
+  if (parenDepth > 0) {
+    return ",)=";
   }
   return ",;=\n";
 }
 
 const closerFor: Record<string, string> = { "<": ">", "(": ")", "[": "]" };
+
+function isAfterTypeOperator(source: string, pos: number): boolean {
+  let i = pos - 1;
+  while (i >= 0 && isWhitespace(source[i])) {
+    i--;
+  }
+  if (i < 0) {
+    return false;
+  }
+  if (source[i] === ">") {
+    return source[i - 1] === "=";
+  }
+  if (isIdentChar(source[i])) {
+    let wordStart = i;
+    while (wordStart > 0 && isIdentChar(source[wordStart - 1])) {
+      wordStart--;
+    }
+    return wordsBeforeObjectType.has(source.slice(wordStart, i + 1));
+  }
+  return "|&?:".includes(source[i]);
+}
+
+function isFunctionTypeParams(source: string, open: number): boolean {
+  const start = skipWhitespace(source, open + 1);
+  if (")[{".includes(source[start]) || source.startsWith("...", start)) {
+    return true;
+  }
+  let nameEnd = start;
+  while (nameEnd < source.length && isIdentChar(source[nameEnd])) {
+    nameEnd++;
+  }
+  return nameEnd > start && ":,?=)".includes(source[skipWhitespace(source, nameEnd)]);
+}
 
 function findReturnTypeEnd(source: string, pos: number): number {
   let p = pos;
@@ -573,6 +680,10 @@ function findReturnTypeEnd(source: string, pos: number): number {
       continue;
     }
     const ch = source[p];
+    if (ch === "{" && (p === pos || isAfterTypeOperator(source, p))) {
+      p = scanTypeExpression(source, p + 1, "") + 1;
+      continue;
+    }
     if (ch === "{") {
       return p;
     }
@@ -583,10 +694,19 @@ function findReturnTypeEnd(source: string, pos: number): number {
       return p;
     }
     if (ch === "<" || ch === "(" || ch === "[") {
+      const open = p;
       p = scanTypeExpression(source, p + 1, "");
       p = scanTypeExpression(source, p, closerFor[ch] || "");
       if (p < source.length) {
         p++;
+      }
+      const afterGroup = skipWhitespace(source, p);
+      if (
+        ch === "(" &&
+        source.startsWith("=>", afterGroup) &&
+        isFunctionTypeParams(source, open)
+      ) {
+        p = afterGroup + 2;
       }
       continue;
     }
@@ -627,7 +747,7 @@ function isInsideImportExportBraces(source: string, pos: number): boolean {
 function findTypeAliasEnd(source: string, pos: number): number {
   let depth = 0;
   while (pos < source.length) {
-    const opaque = skipOpaqueAt(source, pos);
+    const opaque = skipTypeOpaqueAt(source, pos);
     if (opaque !== -1) {
       pos = opaque;
       continue;
@@ -654,13 +774,7 @@ function findTypeAliasEnd(source: string, pos: number): number {
       return pos + 1;
     }
     if (depth === 0 && ch === "\n") {
-      const nextPos = skipWhitespace(source, pos + 1);
-      if (nextPos < source.length && (source[nextPos] === "|" || source[nextPos] === "&")) {
-        pos++;
-        continue;
-      }
-      const prevCh = prevNonWhitespace(source, pos);
-      if (prevCh === "=" || prevCh === "|" || prevCh === "&" || prevCh === ",") {
+      if (continuesTypeAcrossLine(source, pos)) {
         pos++;
         continue;
       }
@@ -672,39 +786,11 @@ function findTypeAliasEnd(source: string, pos: number): number {
 }
 
 function isFunctionOverload(source: string, pos: number): boolean {
-  let p = skipWhitespace(source, pos);
-  const len = source.length;
-  if (p < len && source[p] === "*") {
-    p = skipWhitespace(source, p + 1);
-  }
-  while (p < len && isIdentChar(source[p])) {
-    p++;
-  }
-  p = skipWhitespace(source, p);
-  if (p >= len || source[p] !== "(") {
-    return false;
-  }
-  let depth = 1;
-  p++;
-  while (p < len && depth > 0) {
-    if (source[p] === "(") {
-      depth++;
-    }
-    if (source[p] === ")") {
-      depth--;
-    }
-    if (source[p] === "'" || source[p] === '"') {
-      p = skipString(source, p);
-      continue;
-    }
-    p++;
-  }
-  p = skipWhitespace(source, p);
-  if (p < len && source[p] === ":") {
-    p = scanTypeExpression(source, p + 1, ";{\n");
-  }
-  p = skipWhitespace(source, p);
-  return p < len && source[p] === ";";
+  const start = skipWhitespace(source, pos);
+  return isMethodSignature(
+    source,
+    source[start] === "*" ? skipWhitespace(source, start + 1) : start,
+  );
 }
 
 function isPostfixExpressionEnd(ch: string): boolean {
@@ -714,80 +800,112 @@ function isPostfixExpressionEnd(ch: string): boolean {
 function tryErasePostfixKeyword(
   chars: Array<string>,
   source: string,
+  commentStarts: Map<number, number>,
   pos: number,
   keywordLen: number,
 ): number {
   const prev = prevNonWhitespace(source, pos);
-  if (!isPostfixExpressionEnd(prev)) {
+  const prevIndex = prevCodeIndex(chars, commentStarts, pos);
+  const afterKw = skipWhitespace(source, pos + keywordLen);
+  if (
+    prevIndex < 0 ||
+    (isIdentChar(chars[prevIndex]) && !endsExpression(chars, prevIndex)) ||
+    (!isPostfixExpressionEnd(prev) && !"!+-".includes(prev)) ||
+    afterKw >= source.length ||
+    "=:,;)]}.".includes(source[afterKw])
+  ) {
     return pos;
   }
   const start = pos;
-  const afterKw = skipWhitespace(source, pos + keywordLen);
-  const end = scanTypeExpression(source, afterKw, ",;:)]\n}");
+  const end = scanMemberType(source, afterKw, ",;:?)]\n}");
   blankRange(chars, start, end, false);
   return end;
+}
+
+function findTypeArgsEnd(source: string, start: number): number {
+  if ("<=".includes(source[start + 1]) || source[start - 1] === "<") {
+    return -1;
+  }
+  const open: Array<string> = [];
+  let pos = start + 1;
+  while (pos < source.length) {
+    const opaque = skipOpaqueAt(source, pos);
+    if (opaque !== -1) {
+      pos = opaque;
+      continue;
+    }
+    const ch = source[pos];
+    if (ch === "`") {
+      pos = skipTemplateLiteral(source, pos);
+      continue;
+    }
+    if (source.startsWith("=>", pos)) {
+      pos += 2;
+      continue;
+    }
+    if (ch === "<" || ch === "(" || ch === "[" || ch === "{") {
+      open.push(closerFor[ch] ?? "}");
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      if (open.pop() !== ch) {
+        return -1;
+      }
+    }
+    if (ch === ">" && open.length === 0) {
+      return source[pos + 1] === "=" ? -1 : pos;
+    }
+    if (ch === ">" && open.pop() !== ">") {
+      return -1;
+    }
+    if (open.length === 0 && isExpressionOnlyToken(source, pos)) {
+      return -1;
+    }
+    pos++;
+  }
+  return -1;
+}
+
+function isExpressionOnlyToken(source: string, pos: number): boolean {
+  return (
+    ";+*/%!~".includes(source[pos]) ||
+    source.startsWith("&&", pos) ||
+    source.startsWith("||", pos)
+  );
+}
+
+function canFollowTypeArgs(
+  source: string,
+  pos: number,
+  followsExpression: boolean,
+): boolean {
+  if (!followsExpression) {
+    return source[skipWhitespace(source, pos)] === "(";
+  }
+  const next = skipInlineTrivia(source, pos);
+  if (next >= source.length) {
+    return true;
+  }
+  const ch = source[next];
+  if (isIdentChar(ch)) {
+    return wordsAfterTypeArgs.some(function isWordAt(word) {
+      return matchWord(source, next, word);
+    });
+  }
+  return "()>,;{=[.&|:?]}`\n\r".includes(ch);
 }
 
 function tryEraseGenericArgs(
   chars: Array<string>,
   source: string,
   start: number,
-  len: number,
+  followsExpression: boolean,
 ): number {
-  let pos = start + 1;
-  let depth = 1;
-  let looksLikeGeneric = true;
-  while (pos < len && depth > 0) {
-    const opaque = skipOpaqueAt(source, pos);
-    if (opaque !== -1) {
-      pos = opaque;
-      continue;
-    }
-    if (source[pos] === "<") {
-      depth++;
-      pos++;
-      continue;
-    }
-    if (source[pos] === ">") {
-      depth--;
-      pos++;
-      continue;
-    }
-    if (
-      source[pos] === "(" ||
-      source[pos] === ")" ||
-      source[pos] === ";" ||
-      source[pos] === "{" ||
-      source[pos] === "}"
-    ) {
-      looksLikeGeneric = false;
-      break;
-    }
-    pos++;
-  }
-  if (!looksLikeGeneric || depth !== 0) {
+  const close = findTypeArgsEnd(source, start);
+  if (close === -1 || !canFollowTypeArgs(source, close + 1, followsExpression)) {
     return start + 1;
   }
-  const afterClose =
-    source[pos] === "(" ||
-    source[pos] === ")" ||
-    source[pos] === ">" ||
-    source[pos] === "," ||
-    source[pos] === ";" ||
-    source[pos] === "{" ||
-    source[pos] === "=" ||
-    source[pos] === "\n" ||
-    isWhitespace(source[pos]) ||
-    source[pos] === "[" ||
-    source[pos] === "." ||
-    source[pos] === "&" ||
-    source[pos] === "|" ||
-    pos >= len;
-  if (afterClose) {
-    blankRange(chars, start, pos, false);
-    return pos;
-  }
-  return start + 1;
+  blankRange(chars, start, close + 1, false);
+  return close + 1;
 }
 
 function eraseInlineTypeSpecifiers(
@@ -825,7 +943,8 @@ function eraseOneTypeSpecifier(
   if (identEnd === afterKw) {
     return typeStart + 1;
   }
-  const afterIdent = skipWhitespace(source, identEnd);
+  const specifierEnd = skipImportAlias(source, identEnd);
+  const afterIdent = skipWhitespace(source, specifierEnd);
   if (afterIdent < len && source[afterIdent] === ",") {
     blankRange(chars, typeStart, skipWhitespace(source, afterIdent + 1), false);
     return skipWhitespace(source, afterIdent + 1);
@@ -835,11 +954,736 @@ function eraseOneTypeSpecifier(
     lookBack--;
   }
   if (lookBack >= 0 && source[lookBack] === ",") {
-    blankRange(chars, lookBack, identEnd, false);
-    return identEnd;
+    blankRange(chars, lookBack, specifierEnd, false);
+    return specifierEnd;
   }
-  blankRange(chars, typeStart, identEnd, false);
-  return identEnd;
+  blankRange(chars, typeStart, specifierEnd, false);
+  return specifierEnd;
+}
+
+function skipImportAlias(source: string, pos: number): number {
+  const afterName = skipWhitespace(source, pos);
+  if (!matchWord(source, afterName, "as")) {
+    return pos;
+  }
+  let end = skipWhitespace(source, afterName + 2);
+  while (end < source.length && isIdentChar(source[end])) {
+    end++;
+  }
+  return end;
+}
+
+function moveArrowParen(
+  chars: Array<string>,
+  source: string,
+  commentStarts: Map<number, number>,
+  start: number,
+  end: number,
+): void {
+  if (!source.startsWith("=>", end) || !source.slice(start, end).includes("\n")) {
+    return;
+  }
+  chars[prevCodeIndex(chars, commentStarts, start)] = " ";
+  chars[end - 1] = ")";
+}
+
+function findAsyncOverloadEnd(source: string, pos: number): number {
+  if (!matchWord(source, pos, "async") || !isWordStart(source, pos)) {
+    return -1;
+  }
+  const next = skipInlineTrivia(source, pos + 5);
+  if (!matchWord(source, next, "function") || !isFunctionOverload(source, next + 8)) {
+    return -1;
+  }
+  return findClassMemberEnd(source, next + 8);
+}
+
+function isDeclareStatement(source: string, pos: number): boolean {
+  if (
+    !matchWord(source, pos, "declare") ||
+    !isWordStart(source, pos) ||
+    isAfterDot(source, pos)
+  ) {
+    return false;
+  }
+  const next = skipInlineTrivia(source, pos + 7);
+  return declarableKeywords.some(function isKeywordAt(word) {
+    return matchWord(source, next, word);
+  });
+}
+
+function isThisParam(
+  chars: Array<string>,
+  source: string,
+  commentStarts: Map<number, number>,
+  pos: number,
+): boolean {
+  if (!matchWord(source, pos, "this") || !isWordStart(source, pos)) {
+    return false;
+  }
+  const prev = prevCodeIndex(chars, commentStarts, pos);
+  return (
+    prev >= 0 &&
+    chars[prev] === "(" &&
+    source[skipWhitespace(source, pos + 4)] === ":"
+  );
+}
+
+function findThisParamEnd(source: string, pos: number): number {
+  const end = scanTypeExpression(source, pos + 4, ",)");
+  return source[end] === "," ? skipWhitespace(source, end + 1) : end;
+}
+
+function skipTrivia(source: string, pos: number): number {
+  let next = skipWhitespace(source, pos);
+  while (next < source.length) {
+    const opaque = skipOpaqueAt(source, next);
+    if (opaque === -1) {
+      return next;
+    }
+    next = skipWhitespace(source, opaque);
+  }
+  return next;
+}
+
+function hasOnlyTypes(source: string, start: number, end: number): boolean {
+  const body = eraseTsTypes(source.slice(start, end));
+  let p = skipTrivia(body, 0);
+  while (body[p] === ";") {
+    p = skipTrivia(body, p + 1);
+  }
+  return p >= body.length;
+}
+
+function findTypeOnlyNamespaceEnd(source: string, pos: number): number {
+  if (!matchWord(source, pos, "namespace") || !isWordStart(source, pos)) {
+    return -1;
+  }
+  const open = scanTypeExpression(source, pos + 9, "{\n;");
+  if (source[open] !== "{" || !isIdentChar(source[pos + 10] ?? "")) {
+    return -1;
+  }
+  const end = skipBalanced(source, open);
+  return hasOnlyTypes(source, open + 1, end - 1) ? end : -1;
+}
+
+type NestingLevel = { braceDepth: number; parenDepth: number };
+
+type BraceScope = { isObject: boolean; parenDepth: number };
+
+const expressionKeywords = new Set([
+  "await",
+  "case",
+  "const",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "extends",
+  "in",
+  "instanceof",
+  "let",
+  "new",
+  "of",
+  "return",
+  "throw",
+  "typeof",
+  "var",
+  "void",
+  "yield",
+]);
+
+const blockKeywords = new Set(["do", "else", "finally", "try"]);
+
+const controlKeywords = new Set(["for", "if", "while", "with"]);
+
+const wordsBeforeObjectType = new Set(["extends", "is", "keyof"]);
+
+const declarableKeywords = [
+  "abstract",
+  "async",
+  "class",
+  "const",
+  "enum",
+  "function",
+  "global",
+  "interface",
+  "let",
+  "module",
+  "namespace",
+  "type",
+  "var",
+];
+
+const wordsAfterTypeArgs = [
+  "as",
+  "extends",
+  "implements",
+  "in",
+  "instanceof",
+  "of",
+  "satisfies",
+];
+
+type ClassModifier = { word: string; start: number; end: number; next: number };
+
+const classModifiers = new Set([
+  "public",
+  "private",
+  "protected",
+  "readonly",
+  "abstract",
+  "override",
+  "declare",
+  "static",
+]);
+
+const statementKeywords = new Set([
+  "declare",
+  "export",
+  "function",
+  "import",
+  "interface",
+  "type",
+]);
+
+function isWordStart(source: string, pos: number): boolean {
+  return pos === 0 || !isIdentChar(source[pos - 1]);
+}
+
+function skipInlineTrivia(source: string, pos: number): number {
+  while (pos < source.length) {
+    if (source[pos] === " " || source[pos] === "\t") {
+      pos++;
+      continue;
+    }
+    if (source.startsWith("/*", pos)) {
+      pos = skipBlockComment(source, pos);
+      continue;
+    }
+    return pos;
+  }
+  return pos;
+}
+
+function isClassKeyword(source: string, pos: number): boolean {
+  if (!isWordStart(source, pos) || isAfterDot(source, pos)) {
+    return false;
+  }
+  const next = skipWhitespace(source, pos + 5);
+  if (next >= source.length) {
+    return false;
+  }
+  return (
+    isIdentChar(source[next]) || source[next] === "{" || source[next] === "<"
+  );
+}
+
+function skipBalanced(source: string, pos: number): number {
+  let depth = 0;
+  let p = pos;
+  while (p < source.length) {
+    const opaque = skipOpaqueAt(source, p);
+    if (opaque !== -1) {
+      p = opaque;
+      continue;
+    }
+    const ch = source[p];
+    if (ch === "`") {
+      p = skipTemplateLiteral(source, p);
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth++;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      depth--;
+    }
+    p++;
+    if (depth === 0) {
+      return p;
+    }
+  }
+  return p;
+}
+
+function readWordBefore(chars: Array<string>, end: number): string {
+  let start = end;
+  while (start > 0 && isIdentChar(chars[start - 1])) {
+    start--;
+  }
+  return chars.slice(start, end + 1).join("");
+}
+
+function findOpenParen(chars: Array<string>, closeIndex: number): number {
+  let depth = 0;
+  let i = closeIndex;
+  while (i >= 0) {
+    if (chars[i] === ")") {
+      depth++;
+    }
+    if (chars[i] === "(") {
+      depth--;
+    }
+    if (depth === 0) {
+      return i;
+    }
+    i--;
+  }
+  return -1;
+}
+
+function isControlHeadEnd(chars: Array<string>, closeIndex: number): boolean {
+  let i = findOpenParen(chars, closeIndex) - 1;
+  while (i >= 0 && isWhitespace(chars[i])) {
+    i--;
+  }
+  return i >= 0 && controlKeywords.has(readWordBefore(chars, i));
+}
+
+function isAfterDecorator(chars: Array<string>, index: number): boolean {
+  let i = chars[index] === ")" ? findOpenParen(chars, index) - 1 : index;
+  while (i >= 0 && (isIdentChar(chars[i]) || chars[i] === ".")) {
+    i--;
+  }
+  return i >= 0 && chars[i] === "@";
+}
+
+function endsExpression(chars: Array<string>, index: number): boolean {
+  const ch = chars[index];
+  if (ch === ")") {
+    return !isControlHeadEnd(chars, index);
+  }
+  if (isIdentChar(ch)) {
+    const word = readWordBefore(chars, index);
+    return (
+      !expressionKeywords.has(word) || chars[index - word.length] === "."
+    );
+  }
+  return "]}\"'`".includes(ch);
+}
+
+function isObjectBrace(
+  chars: Array<string>,
+  commentStarts: Map<number, number>,
+  pos: number,
+  labelColon: number,
+): boolean {
+  const prev = prevCodeIndex(chars, commentStarts, pos);
+  if (prev < 0 || prev === labelColon || "{;})".includes(chars[prev])) {
+    return false;
+  }
+  if (chars[prev] === ">") {
+    return chars[prev - 1] !== "=";
+  }
+  if (isIdentChar(chars[prev]) && blockKeywords.has(readWordBefore(chars, prev))) {
+    return false;
+  }
+  return !endsExpression(chars, prev);
+}
+
+function isRegexStart(
+  chars: Array<string>,
+  commentStarts: Map<number, number>,
+  pos: number,
+): boolean {
+  const prev = prevCodeIndex(chars, commentStarts, pos);
+  return prev < 0 || !endsExpression(chars, prev);
+}
+
+function skipRegexLiteral(source: string, pos: number): number {
+  let inClass = false;
+  let p = pos + 1;
+  while (p < source.length && source[p] !== "\n") {
+    if (source[p] === "\\") {
+      p += 2;
+      continue;
+    }
+    if (source[p] === "/" && !inClass) {
+      p++;
+      while (p < source.length && isIdentChar(source[p])) {
+        p++;
+      }
+      return p;
+    }
+    inClass = source[p] === "[" || (inClass && source[p] !== "]");
+    p++;
+  }
+  return -1;
+}
+
+function isNonNullAssertion(
+  chars: Array<string>,
+  source: string,
+  commentStarts: Map<number, number>,
+  pos: number,
+): boolean {
+  const prev = prevCodeIndex(chars, commentStarts, pos);
+  if (prev < 0 || source[pos + 1] === "=" || source[pos + 1] === "!") {
+    return false;
+  }
+  if (source.slice(prev, pos).includes("\n")) {
+    return false;
+  }
+  return (
+    (chars[prev] === ")" || chars[prev] === "]" || isIdentChar(chars[prev])) &&
+    endsExpression(chars, prev)
+  );
+}
+
+function findClassBodyStart(source: string, pos: number): number {
+  let p = pos;
+  while (p < source.length) {
+    p = scanTypeExpression(source, p, "c{([");
+    if (source[p] === "(" || source[p] === "[") {
+      p = skipBalanced(source, p);
+      continue;
+    }
+    if (source[p] !== "c") {
+      return p;
+    }
+    if (matchWord(source, p, "class") && isClassKeyword(source, p)) {
+      p = skipBalanced(source, findClassBodyStart(source, p + 5));
+      continue;
+    }
+    p++;
+  }
+  return p;
+}
+
+function eraseClassHeaderGenerics(
+  chars: Array<string>,
+  source: string,
+  pos: number,
+  bodyStart: number,
+): void {
+  let p = scanTypeExpression(source, pos, "<{([");
+  while (p < bodyStart) {
+    if (source[p] !== "<") {
+      p = scanTypeExpression(source, skipBalanced(source, p), "<{([");
+      continue;
+    }
+    const close = scanTypeExpression(source, p + 1, ">");
+    if (close >= source.length) {
+      return;
+    }
+    blankRange(chars, p, close + 1, false);
+    p = scanTypeExpression(source, close + 1, "<{([");
+  }
+}
+
+function isSwitchKeyword(source: string, pos: number): boolean {
+  return (
+    matchWord(source, pos, "switch") &&
+    isWordStart(source, pos) &&
+    !isAfterDot(source, pos) &&
+    source[skipWhitespace(source, pos + 6)] === "("
+  );
+}
+
+function findSwitchBodyStart(source: string, pos: number): number {
+  const paramsStart = skipWhitespace(source, pos + 6);
+  return skipWhitespace(source, skipBalanced(source, paramsStart));
+}
+
+function isCaseKeyword(
+  source: string,
+  pos: number,
+  switchBodies: Array<NestingLevel>,
+  braceDepth: number,
+): boolean {
+  return (
+    switchBodies.at(-1)?.braceDepth === braceDepth &&
+    (matchWord(source, pos, "case") || matchWord(source, pos, "default")) &&
+    isWordStart(source, pos) &&
+    !isAfterDot(source, pos)
+  );
+}
+
+function isAtCaseLabel(
+  caseLabel: NestingLevel | null,
+  braceDepth: number,
+  parenDepth: number,
+): boolean {
+  return (
+    caseLabel !== null &&
+    caseLabel.braceDepth === braceDepth &&
+    caseLabel.parenDepth === parenDepth
+  );
+}
+
+function popLevelAt(levels: Array<NestingLevel>, braceDepth: number): void {
+  if (levels.at(-1)?.braceDepth === braceDepth) {
+    levels.pop();
+  }
+}
+
+function isAtClassBodyLevel(
+  classBodies: Array<NestingLevel>,
+  templateStack: Array<number>,
+  braceDepth: number,
+  parenDepth: number,
+): boolean {
+  const current = classBodies.at(-1);
+  return (
+    current !== undefined &&
+    current.braceDepth === braceDepth &&
+    current.parenDepth === parenDepth &&
+    templateStack.at(-1) !== braceDepth
+  );
+}
+
+function prevCodeIndex(
+  chars: Array<string>,
+  commentStarts: Map<number, number>,
+  pos: number,
+): number {
+  let i = pos - 1;
+  while (i >= 0) {
+    const commentStart = commentStarts.get(i + 1);
+    if (commentStart !== undefined) {
+      i = commentStart - 1;
+      continue;
+    }
+    if (!isWhitespace(chars[i])) {
+      return i;
+    }
+    i--;
+  }
+  return i;
+}
+
+function isClassMemberStart(
+  chars: Array<string>,
+  source: string,
+  commentStarts: Map<number, number>,
+  pos: number,
+): boolean {
+  const prev = prevCodeIndex(chars, commentStarts, pos);
+  if (prev < 0) {
+    return false;
+  }
+  if ("{;}".includes(chars[prev])) {
+    return true;
+  }
+  if (prev < pos - 1 && isAfterDecorator(chars, prev)) {
+    return true;
+  }
+  return (
+    isPostfixExpressionEnd(chars[prev]) &&
+    source.slice(prev, pos).includes("\n")
+  );
+}
+
+function canStartMemberName(source: string, pos: number): boolean {
+  if (pos >= source.length) {
+    return false;
+  }
+  return isIdentChar(source[pos]) || "#[*\"'".includes(source[pos]);
+}
+
+function readClassModifier(source: string, pos: number): ClassModifier | null {
+  let end = pos;
+  while (end < source.length && isIdentChar(source[end])) {
+    end++;
+  }
+  const word = source.slice(pos, end);
+  if (!classModifiers.has(word)) {
+    return null;
+  }
+  const next = skipInlineTrivia(source, end);
+  if (!canStartMemberName(source, next)) {
+    return null;
+  }
+  return { word, start: pos, end, next };
+}
+
+function scanClassModifiers(source: string, pos: number): Array<ClassModifier> {
+  const modifier = readClassModifier(source, pos);
+  if (modifier === null) {
+    return [];
+  }
+  return [modifier, ...scanClassModifiers(source, modifier.next)];
+}
+
+function isIndexSignature(source: string, pos: number): boolean {
+  if (source[pos] !== "[") {
+    return false;
+  }
+  const nameStart = skipWhitespace(source, pos + 1);
+  let nameEnd = nameStart;
+  while (nameEnd < source.length && isIdentChar(source[nameEnd])) {
+    nameEnd++;
+  }
+  return (
+    nameEnd > nameStart && source[skipWhitespace(source, nameEnd)] === ":"
+  );
+}
+
+function scanMemberType(
+  source: string,
+  pos: number,
+  terminators: string,
+): number {
+  let end = scanTypeExpression(source, pos, terminators);
+  while (source[end] === "\n" && continuesTypeAcrossLine(source, end)) {
+    end = scanTypeExpression(source, end + 1, terminators);
+  }
+  return end;
+}
+
+function continuesTypeAcrossLine(source: string, newlinePos: number): boolean {
+  const nextPos = skipTrivia(source, newlinePos + 1);
+  return (
+    "=,".includes(prevNonWhitespace(source, newlinePos)) ||
+    isAfterTypeOperator(source, newlinePos) ||
+    (nextPos < source.length &&
+      ("|&?:".includes(source[nextPos]) ||
+        matchWord(source, nextPos, "extends")))
+  );
+}
+
+function findClassMemberEnd(source: string, pos: number): number {
+  const end = scanMemberType(source, pos, ";\n");
+  return source[end] === ";" ? end + 1 : end;
+}
+
+function skipMemberName(source: string, pos: number): number {
+  if (source[pos] === "'" || source[pos] === '"') {
+    return skipString(source, pos);
+  }
+  if (source[pos] === "[") {
+    return scanTypeExpression(source, pos + 1, "]") + 1;
+  }
+  let end = source[pos] === "#" ? pos + 1 : pos;
+  while (end < source.length && isIdentChar(source[end])) {
+    end++;
+  }
+  return end;
+}
+
+function skipLeadingObjectType(source: string, pos: number): number {
+  const start = skipWhitespace(source, pos);
+  if (source[start] !== "{") {
+    return start;
+  }
+  return scanTypeExpression(source, start + 1, "") + 1;
+}
+
+function findSignatureTerminator(source: string, pos: number): number {
+  const end = scanMemberType(source, pos, ";{\n");
+  if (source[end] === "{" && isAfterTypeOperator(source, end)) {
+    return findSignatureTerminator(
+      source,
+      scanTypeExpression(source, end + 1, "") + 1,
+    );
+  }
+  return end;
+}
+
+function findInterfaceEnd(source: string, pos: number): number {
+  return skipBalanced(source, scanTypeExpression(source, pos, "{"));
+}
+
+function findMethodParamsStart(source: string, pos: number): number {
+  const afterName = skipInlineTrivia(source, skipMemberName(source, pos));
+  const afterMarker = source[afterName] === "?" ? afterName + 1 : afterName;
+  if (source[afterMarker] !== "<") {
+    return skipWhitespace(source, afterMarker);
+  }
+  return skipWhitespace(
+    source,
+    scanTypeExpression(source, afterMarker + 1, ">") + 1,
+  );
+}
+
+function skipAsyncKeyword(source: string, pos: number): number {
+  if (!matchWord(source, pos, "async")) {
+    return pos;
+  }
+  const next = skipInlineTrivia(source, pos + 5);
+  return canStartMemberName(source, next) ? next : pos;
+}
+
+function isMethodSignature(source: string, pos: number): boolean {
+  const open = findMethodParamsStart(source, skipAsyncKeyword(source, pos));
+  if (source[open] !== "(") {
+    return false;
+  }
+  const close = scanTypeExpression(source, open + 1, ")");
+  if (source[close] !== ")") {
+    return false;
+  }
+  const afterParams = skipWhitespace(source, close + 1);
+  if (source[afterParams] !== ":") {
+    return source[afterParams] !== "{";
+  }
+  const typeStart = skipLeadingObjectType(source, afterParams + 1);
+  const typeEnd = findSignatureTerminator(source, typeStart);
+  return source[skipWhitespace(source, typeEnd)] !== "{";
+}
+
+function isBodilessMember(
+  source: string,
+  modifiers: Array<ClassModifier>,
+  memberStart: number,
+): boolean {
+  return (
+    isIndexSignature(source, memberStart) ||
+    isMethodSignature(source, memberStart) ||
+    modifiers.some(function isAmbient(modifier) {
+      return modifier.word === "abstract" || modifier.word === "declare";
+    })
+  );
+}
+
+function eraseMemberTypeAnnotation(
+  chars: Array<string>,
+  source: string,
+  pos: number,
+): number {
+  if (source[pos] === "[") {
+    return pos;
+  }
+  const nameEnd = skipMemberName(source, pos);
+  const afterName = skipInlineTrivia(source, nameEnd);
+  const isMarked = source[afterName] === "?" || source[afterName] === "!";
+  const afterMarker = isMarked ? afterName + 1 : afterName;
+  const colon = skipInlineTrivia(source, afterMarker);
+  if (source[colon] === ":") {
+    const typeStart = skipWhitespace(source, colon + 1);
+    const end = scanMemberType(source, typeStart, ",;=\n");
+    blankRange(chars, afterName, end, false);
+    return end;
+  }
+  if (isMarked) {
+    blankRange(chars, afterName, afterMarker, false);
+    return afterMarker;
+  }
+  return statementKeywords.has(source.slice(pos, nameEnd)) ? nameEnd : pos;
+}
+
+function eraseClassMember(
+  chars: Array<string>,
+  source: string,
+  pos: number,
+): number {
+  const modifiers = scanClassModifiers(source, pos);
+  const memberStart = modifiers.at(-1)?.next ?? pos;
+  if (isBodilessMember(source, modifiers, memberStart)) {
+    const end = findClassMemberEnd(source, memberStart);
+    blankRange(chars, pos, end, true);
+    return end;
+  }
+  const continuesPreviousLine =
+    source[memberStart] === "[" || source[memberStart] === "*";
+  for (const modifier of modifiers) {
+    if (modifier.word !== "static") {
+      const semiPrefix = continuesPreviousLine && modifier.start === pos;
+      blankRange(chars, modifier.start, modifier.end, semiPrefix);
+    }
+  }
+  return eraseMemberTypeAnnotation(chars, source, memberStart);
 }
 
 function enterTemplate(
@@ -876,10 +1720,32 @@ export function eraseTsTypes(source: string): string {
   let parenDepth = 0;
   let braceDepth = 0;
   const templateStack: Array<number> = [];
+  const bodyStarts = new Map<number, Array<NestingLevel>>();
+  const classBodies: Array<NestingLevel> = [];
+  const switchBodies: Array<NestingLevel> = [];
+  const commentStarts = new Map<number, number>();
+  const braceScopes: Array<BraceScope> = [];
+  let caseLabel: NestingLevel | null = null;
+  let labelColon = -1;
 
   while (pos < len) {
+    if (
+      canStartMemberName(source, pos) &&
+      isAtClassBodyLevel(classBodies, templateStack, braceDepth, parenDepth) &&
+      isClassMemberStart(chars, source, commentStarts, pos)
+    ) {
+      const erased = eraseClassMember(chars, source, pos);
+      if (erased !== pos) {
+        pos = erased;
+        continue;
+      }
+    }
+
     const opaque = skipOpaqueAt(source, pos);
     if (opaque !== -1) {
+      if (source[pos] === "/") {
+        commentStarts.set(opaque, pos);
+      }
       pos = opaque;
       continue;
     }
@@ -889,6 +1755,14 @@ export function eraseTsTypes(source: string): string {
     if (ch === "`") {
       pos = enterTemplate(source, pos + 1, braceDepth, templateStack);
       continue;
+    }
+
+    if (ch === "/" && isRegexStart(chars, commentStarts, pos)) {
+      const regexEnd = skipRegexLiteral(source, pos);
+      if (regexEnd !== -1) {
+        pos = regexEnd;
+        continue;
+      }
     }
 
     if (ch === "(") {
@@ -902,7 +1776,15 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
     if (ch === "{") {
+      braceScopes.push({
+        isObject:
+          !bodyStarts.has(pos) &&
+          isObjectBrace(chars, commentStarts, pos, labelColon),
+        parenDepth,
+      });
       braceDepth++;
+      parenDepth = 0;
+      bodyStarts.get(pos)?.push({ braceDepth, parenDepth });
       pos++;
       continue;
     }
@@ -915,14 +1797,33 @@ export function eraseTsTypes(source: string): string {
         pos = enterTemplate(source, pos + 1, braceDepth, templateStack);
         continue;
       }
+      popLevelAt(classBodies, braceDepth);
+      popLevelAt(switchBodies, braceDepth);
+      parenDepth = braceScopes.pop()?.parenDepth ?? 0;
       braceDepth--;
+      pos++;
+      continue;
+    }
+
+    if (ch === ":" && isAtCaseLabel(caseLabel, braceDepth, parenDepth)) {
+      caseLabel = null;
+      labelColon = pos;
       pos++;
       continue;
     }
 
     if (
       ch === ":" &&
-      isTypeAnnotationContext(source, pos, parenDepth, braceDepth)
+      (isTypeAnnotationContext(
+        chars,
+        source,
+        pos,
+        parenDepth,
+        braceDepth,
+        commentStarts,
+        braceScopes.at(-1)?.isObject === true,
+      ) ||
+        isArrowReturnInTernary(source, pos))
     ) {
       const terminators = getTypeAnnotationTerminators(source, pos, parenDepth);
       let start = pos;
@@ -934,33 +1835,52 @@ export function eraseTsTypes(source: string): string {
       if (terminators.includes("{")) {
         const end = findReturnTypeEnd(source, pos);
         blankRange(chars, start, end, false);
+        moveArrowParen(chars, source, commentStarts, start, end);
         pos = end;
       } else {
-        const end = scanTypeExpression(source, pos, terminators);
+        const end = scanMemberType(source, pos, terminators);
         blankRange(chars, start, end, false);
         pos = end;
       }
       continue;
     }
 
-    if (matchWord(source, pos, "function") && !isAfterDot(source, pos) && isFunctionOverload(source, pos + 8)) {
-      const start = pos;
-      const end = findStatementEnd(source, pos + 8);
-      blankRange(chars, start, end, true);
+    const asyncFunctionEnd = findAsyncOverloadEnd(source, pos);
+    if (asyncFunctionEnd !== -1) {
+      blankRange(chars, pos, asyncFunctionEnd, true);
+      pos = asyncFunctionEnd;
+      continue;
+    }
+
+    if (
+      matchWord(source, pos, "function") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos) &&
+      isFunctionOverload(source, pos + 8)
+    ) {
+      const end = findClassMemberEnd(source, pos + 8);
+      blankRange(chars, pos, end, true);
       pos = end;
       continue;
     }
 
-    if (matchWord(source, pos, "interface") && !isAfterDot(source, pos)) {
-      const start = pos;
-      pos += 9;
-      const end = findStatementEnd(source, pos);
-      blankRange(chars, start, end, true);
+    if (
+      matchWord(source, pos, "interface") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos) &&
+      isIdentChar(source[skipWhitespace(source, pos + 9)] ?? "")
+    ) {
+      const end = findInterfaceEnd(source, pos + 9);
+      blankRange(chars, pos, end, true);
       pos = end;
       continue;
     }
 
-    if (matchWord(source, pos, "type") && !isAfterDot(source, pos)) {
+    if (
+      matchWord(source, pos, "type") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos)
+    ) {
       const start = pos;
       pos += 4;
       const afterType = skipWhitespace(source, pos);
@@ -984,7 +1904,16 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (matchWord(source, pos, "import")) {
+    if (
+      matchWord(source, pos, "import") &&
+      isWordStart(source, pos) &&
+      ".(".includes(source[skipWhitespace(source, pos + 6)] ?? " ")
+    ) {
+      pos += 6;
+      continue;
+    }
+
+    if (matchWord(source, pos, "import") && isWordStart(source, pos)) {
       const importStart = pos;
       pos += 6;
       const afterImport = skipWhitespace(source, pos);
@@ -1007,7 +1936,7 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (matchWord(source, pos, "export")) {
+    if (matchWord(source, pos, "export") && isWordStart(source, pos)) {
       const exportStart = pos;
       pos += 6;
       const afterExport = skipWhitespace(source, pos);
@@ -1045,18 +1974,24 @@ export function eraseTsTypes(source: string): string {
         }
       }
       if (matchWord(source, afterExport, "function") && isFunctionOverload(source, afterExport + 8)) {
-        const end = findStatementEnd(source, afterExport + 8);
+        const end = findClassMemberEnd(source, afterExport + 8);
         blankRange(chars, exportStart, end, true);
         pos = end;
         continue;
       }
       if (matchWord(source, afterExport, "interface") && !isAfterDot(source, afterExport)) {
-        const end = findStatementEnd(source, afterExport + 9);
+        const end = findInterfaceEnd(source, afterExport + 9);
         blankRange(chars, exportStart, end, true);
         pos = end;
         continue;
       }
-      if (matchWord(source, afterExport, "declare") && !isAfterDot(source, afterExport)) {
+      const exportedNamespaceEnd = findTypeOnlyNamespaceEnd(source, afterExport);
+      if (exportedNamespaceEnd !== -1) {
+        blankRange(chars, exportStart, exportedNamespaceEnd, true);
+        pos = exportedNamespaceEnd;
+        continue;
+      }
+      if (isDeclareStatement(source, afterExport)) {
         const end = findStatementEnd(source, afterExport + 7);
         blankRange(chars, exportStart, end, true);
         pos = end;
@@ -1066,27 +2001,63 @@ export function eraseTsTypes(source: string): string {
       continue;
     }
 
-    if (
-      (matchWord(source, pos, "public") ||
-        matchWord(source, pos, "private") ||
-        matchWord(source, pos, "protected")) &&
-      !isAfterDot(source, pos) &&
-      braceDepth > 0
-    ) {
-      const kw = matchWord(source, pos, "public")
-        ? "public"
-        : matchWord(source, pos, "private")
-          ? "private"
-          : "protected";
-      const afterKw = skipWhitespace(source, pos + kw.length);
-      if (afterKw < len && (isIdentChar(source[afterKw]) || source[afterKw] === "#")) {
-        blankRange(chars, pos, pos + kw.length, false);
-        pos = pos + kw.length;
-        continue;
-      }
+    if (isSwitchKeyword(source, pos)) {
+      bodyStarts.set(findSwitchBodyStart(source, pos), switchBodies);
+      pos += 6;
+      continue;
     }
 
-    if (matchWord(source, pos, "declare") && !isAfterDot(source, pos)) {
+    if (isThisParam(chars, source, commentStarts, pos)) {
+      const end = findThisParamEnd(source, pos);
+      blankRange(chars, pos, end, false);
+      pos = end;
+      continue;
+    }
+
+    const namespaceEnd = findTypeOnlyNamespaceEnd(source, pos);
+    if (namespaceEnd !== -1) {
+      blankRange(chars, pos, namespaceEnd, true);
+      pos = namespaceEnd;
+      continue;
+    }
+
+    if (isCaseKeyword(source, pos, switchBodies, braceDepth)) {
+      caseLabel = { braceDepth, parenDepth };
+      pos++;
+      continue;
+    }
+
+    if (matchWord(source, pos, "class") && isClassKeyword(source, pos)) {
+      const bodyStart = findClassBodyStart(source, pos + 5);
+      bodyStarts.set(bodyStart, classBodies);
+      eraseClassHeaderGenerics(chars, source, pos + 5, bodyStart);
+      pos += 5;
+      continue;
+    }
+
+    if (
+      matchWord(source, pos, "implements") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos) &&
+      isIdentChar(source[skipInlineTrivia(source, pos + 10)] ?? "")
+    ) {
+      const end = scanTypeExpression(source, pos + 10, "{");
+      blankRange(chars, pos, end, false);
+      pos = end;
+      continue;
+    }
+
+    if (
+      matchWord(source, pos, "abstract") &&
+      isWordStart(source, pos) &&
+      matchWord(source, skipInlineTrivia(source, pos + 8), "class")
+    ) {
+      blankRange(chars, pos, pos + 8, false);
+      pos += 8;
+      continue;
+    }
+
+    if (isDeclareStatement(source, pos)) {
       const start = pos;
       const end = findStatementEnd(source, pos + 7);
       blankRange(chars, start, end, true);
@@ -1096,42 +2067,40 @@ export function eraseTsTypes(source: string): string {
 
     if (
       matchWord(source, pos, "as") &&
+      isWordStart(source, pos) &&
       !isAfterDot(source, pos) &&
       !isInsideImportExportBraces(source, pos)
     ) {
-      const erased = tryErasePostfixKeyword(chars, source, pos, 2);
+      const erased = tryErasePostfixKeyword(chars, source, commentStarts, pos, 2);
       if (erased !== pos) {
         pos = erased;
         continue;
       }
     }
 
-    if (matchWord(source, pos, "satisfies") && !isAfterDot(source, pos)) {
-      const erased = tryErasePostfixKeyword(chars, source, pos, 9);
+    if (
+      matchWord(source, pos, "satisfies") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos)
+    ) {
+      const erased = tryErasePostfixKeyword(chars, source, commentStarts, pos, 9);
       if (erased !== pos) {
         pos = erased;
         continue;
       }
     }
 
-    if (ch === "!" && pos > 0) {
-      const prev = prevNonWhitespace(source, pos);
-      if (isIdentChar(prev) || prev === ")" || prev === "]") {
-        const next = pos + 1 < len ? source[pos + 1] : "";
-        if (next !== "=" && next !== "!") {
-          chars[pos] = " ";
-          pos++;
-          continue;
-        }
-      }
+    if (ch === "!" && isNonNullAssertion(chars, source, commentStarts, pos)) {
+      chars[pos] = " ";
+      pos++;
+      continue;
     }
 
-    if (ch === "<" && pos > 0) {
+    if (ch === "<") {
       const prev = prevNonWhitespace(source, pos);
-      if (isIdentChar(prev) || prev === ")") {
-        pos = tryEraseGenericArgs(chars, source, pos, len);
-        continue;
-      }
+      const followsExpression = isIdentChar(prev) || prev === ")";
+      pos = tryEraseGenericArgs(chars, source, pos, followsExpression);
+      continue;
     }
 
     pos++;

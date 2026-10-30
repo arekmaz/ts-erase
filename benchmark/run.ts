@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { transformSync } from "amaro";
 import tsBlankSpace from "ts-blank-space";
@@ -39,20 +40,26 @@ console.log(`Warmup: ${WARMUP} iterations, Bench: ${ITERATIONS} iterations\n`);
 for (const fixture of fixtures) {
   console.log(`--- ${fixture.name} (${fixture.source.length} bytes) ---`);
 
-  const tErase = bench("eraseTsTypes  ", function runErase() {
+  const tErase = bench("eraseTsTypes        ", function runErase() {
     eraseTsTypes(fixture.source);
   });
 
-  const tAmaro = bench("amaro         ", function runAmaro() {
+  const tAmaro = bench("amaro               ", function runAmaro() {
     transformSync(fixture.source, { mode: "strip-only" });
   });
 
-  const tBlankSpace = bench("ts-blank-space", function runBlankSpace() {
+  const tBlankSpace = bench("ts-blank-space      ", function runBlankSpace() {
     tsBlankSpace(fixture.source);
+  });
+
+  const tStrip = bench("stripTypeScriptTypes", function runStrip() {
+    stripTypeScriptTypes(fixture.source);
   });
 
   const ratioAmaro = tAmaro / tErase;
   const ratioBlankSpace = tBlankSpace / tErase;
-  console.log(`  eraseTsTypes vs amaro:          ${ratioAmaro.toFixed(2)}x ${ratioAmaro > 1 ? "faster" : "slower"}`);
-  console.log(`  eraseTsTypes vs ts-blank-space: ${ratioBlankSpace.toFixed(2)}x ${ratioBlankSpace > 1 ? "faster" : "slower"}\n`);
+  const ratioStrip = tStrip / tErase;
+  console.log(`  eraseTsTypes vs amaro:                ${ratioAmaro.toFixed(2)}x ${ratioAmaro > 1 ? "faster" : "slower"}`);
+  console.log(`  eraseTsTypes vs ts-blank-space:       ${ratioBlankSpace.toFixed(2)}x ${ratioBlankSpace > 1 ? "faster" : "slower"}`);
+  console.log(`  eraseTsTypes vs stripTypeScriptTypes: ${ratioStrip.toFixed(2)}x ${ratioStrip > 1 ? "faster" : "slower"}\n`);
 }
