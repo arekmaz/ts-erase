@@ -955,12 +955,14 @@ describe("eraseTsTypes", () => {
 
   describe("class features", () => {
     it("erases class generic parameter", () => {
-      expectErasure(`class Box<T> { value: T }`, `class Box    { value: T }`);
+      expectErasure(`class Box<T> { value: T }`, `class Box    { value    }`);
     });
 
-    it("does not erase class implements clause (runtime keyword)", () => {
-      const input = `class Foo implements Bar { }`;
-      expectErasure(input, input);
+    it("erases class implements clause", () => {
+      expectErasure(
+        `class Foo implements Bar { }`,
+        `class Foo                { }`,
+      );
     });
 
     it("erases class extends with generic", () => {
@@ -2331,7 +2333,125 @@ describe("eraseTsTypes", () => {
       it("erases overload signatures and keeps implementation", () => {
         expectErasure(
           `class C { foo(x: string): string; foo(x: number): number; foo(x: string | number): string | number { return x } }`,
-          `class C { foo(x        )        ; foo(x        )        ; foo(x                 )                  { return x } }`,
+          `class C { ;                       ;                       foo(x                 )                  { return x } }`,
+        );
+      });
+
+      it("erases overload signatures ended by newlines", () => {
+        expectErasure(
+          `class C {\n  foo(x: string): string\n  foo(x: number): number\n  foo(x: unknown) { return x }\n}`,
+          `class C {\n  ;                     \n  ;                     \n  foo(x         ) { return x }\n}`,
+        );
+      });
+
+      it("erases constructor overloads", () => {
+        expectErasure(
+          `class C { constructor(x: string); constructor(x: unknown) {} }`,
+          `class C { ;                       constructor(x         ) {} }`,
+        );
+      });
+
+      it("erases overloads with modifiers", () => {
+        expectErasure(
+          `class C { public foo(x: string): void; public foo(x: unknown) {} }`,
+          `class C { ;                                   foo(x         ) {} }`,
+        );
+      });
+
+      it("keeps a method with its brace on the next line", () => {
+        const input = `class C { foo()\n{ return 1 } }`;
+        expectErasure(input, input);
+      });
+
+      it("does not treat a field initializer call as an overload", () => {
+        const input = `class C { x = foo(1); y = 2 }`;
+        expectErasure(input, input);
+      });
+    });
+
+    describe("class fields", () => {
+      it("erases annotations on fields without modifiers", () => {
+        expectErasure(
+          `class C { x: number = 1; y?: string; z!: boolean }`,
+          `class C { x         = 1; y         ; z           }`,
+        );
+      });
+
+      it("erases annotations on fields ended by newlines", () => {
+        expectErasure(
+          `class C {\n  x: number\n  y: string\n}`,
+          `class C {\n  x        \n  y        \n}`,
+        );
+      });
+
+      it("erases annotations on keyword and quoted field names", () => {
+        expectErasure(
+          `class C { type: string; "a": number }`,
+          `class C { type        ; "a"         }`,
+        );
+      });
+
+      it("erases multi-line union field types", () => {
+        expectErasure(
+          `class C {\n  x:\n    | string\n    | number\n  y = 1\n}`,
+          `class C {\n  x \n            \n            \n  y = 1\n}`,
+        );
+      });
+
+      it("erases an index signature without modifiers", () => {
+        expectErasure(
+          `class C { [key: string]: number; x = 1 }`,
+          `class C { ;                      x = 1 }`,
+        );
+      });
+
+      it("does not treat object literal values as field types", () => {
+        const input = `class C { x = { a: 1 } }`;
+        expectErasure(input, input);
+      });
+
+      it("does not treat a continued ternary as a field", () => {
+        const input = `class C {\n  x = a ?\n    b : c\n}`;
+        expectErasure(input, input);
+      });
+
+      it("does not treat a template interpolation as a member", () => {
+        const input = "class C { x = `${foo(1)}`; }";
+        expectErasure(input, input);
+      });
+
+      it("still erases casts on a continued line", () => {
+        expectErasure(
+          `class C { x = y\n  as Foo }`,
+          `class C { x = y\n         }`,
+        );
+      });
+    });
+
+    describe("class heritage", () => {
+      it("erases implements with several interfaces", () => {
+        expectErasure(
+          `class C<T> extends B<T> implements I<T>, J { x = 1 }`,
+          `class C    extends B                       { x = 1 }`,
+        );
+      });
+
+      it("erases implements on its own line", () => {
+        expectErasure(
+          `class C\n  implements I {}`,
+          `class C\n               {}`,
+        );
+      });
+
+      it("does not erase implements as a property", () => {
+        const input = `const o = { implements: 1 }; o.implements`;
+        expectErasure(input, input);
+      });
+
+      it("finds the body after a class in the heritage clause", () => {
+        expectErasure(
+          `class A extends class B {} { readonly x = 1 }`,
+          `class A extends class B {} {          x = 1 }`,
         );
       });
     });

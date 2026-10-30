@@ -889,8 +889,26 @@ function isClassKeyword(source: string, pos: number): boolean {
   );
 }
 
+function findClassBodyStart(source: string, pos: number): number {
+  let p = pos;
+  while (p < source.length) {
+    p = scanTypeExpression(source, p, "c{");
+    if (source[p] !== "c") {
+      return p;
+    }
+    if (matchWord(source, p, "class") && isClassKeyword(source, p)) {
+      const nestedBody = findClassBodyStart(source, p + 5);
+      p = scanTypeExpression(source, nestedBody + 1, "") + 1;
+      continue;
+    }
+    p++;
+  }
+  return p;
+}
+
 function isAtClassBodyLevel(
   classBodies: Array<ClassBody>,
+  templateStack: Array<number>,
   braceDepth: number,
   parenDepth: number,
 ): boolean {
@@ -898,19 +916,51 @@ function isAtClassBodyLevel(
   return (
     current !== undefined &&
     current.braceDepth === braceDepth &&
-    current.parenDepth === parenDepth
+    current.parenDepth === parenDepth &&
+    templateStack.at(-1) !== braceDepth
   );
 }
 
-function isClassMemberStart(source: string, pos: number): boolean {
+function prevCodeIndex(
+  chars: Array<string>,
+  commentStarts: Map<number, number>,
+  pos: number,
+): number {
   let i = pos - 1;
-  while (i >= 0 && (source[i] === " " || source[i] === "\t")) {
+  while (i >= 0) {
+    const commentStart = commentStarts.get(i + 1);
+    if (commentStart !== undefined) {
+      i = commentStart - 1;
+      continue;
+    }
+    if (!isWhitespace(chars[i])) {
+      return i;
+    }
     i--;
   }
-  return i >= 0 && "\n\r{;}/".includes(source[i]);
+  return i;
 }
 
-function canFollowModifier(source: string, pos: number): boolean {
+function isClassMemberStart(
+  chars: Array<string>,
+  source: string,
+  commentStarts: Map<number, number>,
+  pos: number,
+): boolean {
+  const prev = prevCodeIndex(chars, commentStarts, pos);
+  if (prev < 0) {
+    return false;
+  }
+  if ("{;}".includes(chars[prev])) {
+    return true;
+  }
+  return (
+    isPostfixExpressionEnd(chars[prev]) &&
+    source.slice(prev, pos).includes("\n")
+  );
+}
+
+function canStartMemberName(source: string, pos: number): boolean {
   if (pos >= source.length) {
     return false;
   }
@@ -927,7 +977,7 @@ function readClassModifier(source: string, pos: number): ClassModifier | null {
     return null;
   }
   const next = skipInlineTrivia(source, end);
-  if (!canFollowModifier(source, next)) {
+  if (!canStartMemberName(source, next)) {
     return null;
   }
   return { word, start: pos, end, next };
@@ -955,41 +1005,34 @@ function isIndexSignature(source: string, pos: number): boolean {
   );
 }
 
-function isBodilessMember(
+function scanMemberType(
   source: string,
-  modifiers: Array<ClassModifier>,
-  memberStart: number,
-): boolean {
-  return (
-    isIndexSignature(source, memberStart) ||
-    modifiers.some(function isAmbient(modifier) {
-      return modifier.word === "abstract" || modifier.word === "declare";
-    })
-  );
-}
-
-function findClassMemberEnd(source: string, pos: number): number {
-  const end = scanTypeExpression(source, pos, ";\n");
-  if (end >= source.length) {
-    return end;
-  }
-  if (source[end] === ";") {
-    return end + 1;
-  }
+  pos: number,
+  terminators: string,
+): number {
+  const end = scanTypeExpression(source, pos, terminators);
   if (source[end] !== "\n") {
     return end;
   }
   const prevCh = prevNonWhitespace(source, end);
   const nextCh = source[skipWhitespace(source, end + 1)];
   if (":|&=,".includes(prevCh) || nextCh === "|" || nextCh === "&") {
-    return findClassMemberEnd(source, end + 1);
+    return scanMemberType(source, end + 1, terminators);
   }
   return end;
+}
+
+function findClassMemberEnd(source: string, pos: number): number {
+  const end = scanMemberType(source, pos, ";\n");
+  return source[end] === ";" ? end + 1 : end;
 }
 
 function skipMemberName(source: string, pos: number): number {
   if (source[pos] === "'" || source[pos] === '"') {
     return skipString(source, pos);
+  }
+  if (source[pos] === "[") {
+    return scanTypeExpression(source, pos + 1, "]") + 1;
   }
   let end = source[pos] === "#" ? pos + 1 : pos;
   while (end < source.length && isIdentChar(source[end])) {
@@ -998,35 +1041,90 @@ function skipMemberName(source: string, pos: number): number {
   return end;
 }
 
+function skipLeadingObjectType(source: string, pos: number): number {
+  const start = skipWhitespace(source, pos);
+  if (source[start] !== "{") {
+    return start;
+  }
+  return scanTypeExpression(source, start + 1, "") + 1;
+}
+
+function findMethodParamsStart(source: string, pos: number): number {
+  const afterName = skipInlineTrivia(source, skipMemberName(source, pos));
+  const afterMarker = source[afterName] === "?" ? afterName + 1 : afterName;
+  if (source[afterMarker] !== "<") {
+    return skipWhitespace(source, afterMarker);
+  }
+  return skipWhitespace(
+    source,
+    scanTypeExpression(source, afterMarker + 1, ">") + 1,
+  );
+}
+
+function isMethodSignature(source: string, pos: number): boolean {
+  const open = findMethodParamsStart(source, pos);
+  if (source[open] !== "(") {
+    return false;
+  }
+  const close = scanTypeExpression(source, open + 1, ")");
+  if (source[close] !== ")") {
+    return false;
+  }
+  const afterParams = skipWhitespace(source, close + 1);
+  if (source[afterParams] !== ":") {
+    return source[afterParams] !== "{";
+  }
+  const typeStart = skipLeadingObjectType(source, afterParams + 1);
+  const typeEnd = scanMemberType(source, typeStart, ";{\n");
+  return source[skipWhitespace(source, typeEnd)] !== "{";
+}
+
+function isBodilessMember(
+  source: string,
+  modifiers: Array<ClassModifier>,
+  memberStart: number,
+): boolean {
+  return (
+    isIndexSignature(source, memberStart) ||
+    isMethodSignature(source, memberStart) ||
+    modifiers.some(function isAmbient(modifier) {
+      return modifier.word === "abstract" || modifier.word === "declare";
+    })
+  );
+}
+
 function eraseMemberTypeAnnotation(
   chars: Array<string>,
   source: string,
   pos: number,
 ): number {
+  if (source[pos] === "[") {
+    return pos;
+  }
   const afterName = skipInlineTrivia(source, skipMemberName(source, pos));
   const isMarked = source[afterName] === "?" || source[afterName] === "!";
   const afterMarker = isMarked ? afterName + 1 : afterName;
   const colon = skipInlineTrivia(source, afterMarker);
-  if (source[colon] !== ":") {
+  if (source[colon] === ":") {
+    const typeStart = skipWhitespace(source, colon + 1);
+    const end = scanMemberType(source, typeStart, ",;=\n");
+    blankRange(chars, afterName, end, false);
+    return end;
+  }
+  if (isMarked) {
     blankRange(chars, afterName, afterMarker, false);
     return afterMarker;
   }
-  const typeStart = skipWhitespace(source, colon + 1);
-  const end = scanTypeExpression(source, typeStart, ",;=\n");
-  blankRange(chars, afterName, end, false);
-  return end;
+  return pos;
 }
 
-function eraseClassModifiers(
+function eraseClassMember(
   chars: Array<string>,
   source: string,
   pos: number,
 ): number {
   const modifiers = scanClassModifiers(source, pos);
-  if (modifiers.length === 0) {
-    return pos;
-  }
-  const memberStart = modifiers[modifiers.length - 1].next;
+  const memberStart = modifiers.at(-1)?.next ?? pos;
   if (isBodilessMember(source, modifiers, memberStart)) {
     const end = findClassMemberEnd(source, memberStart);
     blankRange(chars, pos, end, true);
@@ -1079,10 +1177,26 @@ export function eraseTsTypes(source: string): string {
   const templateStack: Array<number> = [];
   const classBodyStarts = new Set<number>();
   const classBodies: Array<ClassBody> = [];
+  const commentStarts = new Map<number, number>();
 
   while (pos < len) {
+    if (
+      canStartMemberName(source, pos) &&
+      isAtClassBodyLevel(classBodies, templateStack, braceDepth, parenDepth) &&
+      isClassMemberStart(chars, source, commentStarts, pos)
+    ) {
+      const erased = eraseClassMember(chars, source, pos);
+      if (erased !== pos) {
+        pos = erased;
+        continue;
+      }
+    }
+
     const opaque = skipOpaqueAt(source, pos);
     if (opaque !== -1) {
+      if (source[pos] === "/") {
+        commentStarts.set(opaque, pos);
+      }
       pos = opaque;
       continue;
     }
@@ -1276,8 +1390,20 @@ export function eraseTsTypes(source: string): string {
     }
 
     if (matchWord(source, pos, "class") && isClassKeyword(source, pos)) {
-      classBodyStarts.add(scanTypeExpression(source, pos + 5, "{"));
+      classBodyStarts.add(findClassBodyStart(source, pos + 5));
       pos += 5;
+      continue;
+    }
+
+    if (
+      matchWord(source, pos, "implements") &&
+      isWordStart(source, pos) &&
+      !isAfterDot(source, pos) &&
+      isIdentChar(source[skipInlineTrivia(source, pos + 10)] ?? "")
+    ) {
+      const end = scanTypeExpression(source, pos + 10, "{");
+      blankRange(chars, pos, end, false);
+      pos = end;
       continue;
     }
 
@@ -1289,17 +1415,6 @@ export function eraseTsTypes(source: string): string {
       blankRange(chars, pos, pos + 8, false);
       pos += 8;
       continue;
-    }
-
-    if (
-      isAtClassBodyLevel(classBodies, braceDepth, parenDepth) &&
-      isClassMemberStart(source, pos)
-    ) {
-      const erased = eraseClassModifiers(chars, source, pos);
-      if (erased !== pos) {
-        pos = erased;
-        continue;
-      }
     }
 
     if (matchWord(source, pos, "declare") && !isAfterDot(source, pos)) {
