@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node run.ts"
+    "start": "node --disable-warning=ExperimentalWarning run.ts"
   },
   "devDependencies": {
     "amaro": "1.1.9",
