@@ -12,10 +12,10 @@ ts-erase is not the fastest or the most robust option. Its advantage is that it 
 
 | Tool                           | How it works                          | Install size                     | Speed compared to ts-erase                                | Syntax it can't erase                                    |
 | ------------------------------ | ------------------------------------- | -------------------------------- | --------------------------------------------------------- | -------------------------------------------------------- |
-| ts-erase                       | Hand-written scanner, no parser       | One 52 KB file, no dependencies  | n/a                                                       | Left in place, fails as a syntax error at runtime        |
+| ts-erase                       | Hand-written scanner, no parser       | One 53 KB file, no dependencies  | n/a                                                       | Left in place, fails as a syntax error at runtime        |
 | `stripTypeScriptTypes` in Node | Built on amaro, still experimental    | None, ships with Node            | 2-3x faster on most code, slower on type-heavy files      | Throws a clear error, `transform` mode supports `enum`   |
 | [amaro](https://github.com/nodejs/amaro) | SWC compiled to WebAssembly | 3.7 MB                           | 2-3x faster on most code, slower on type-heavy files      | Throws a clear error, `transform` mode supports `enum`   |
-| [ts-blank-space](https://github.com/bloomberg/ts-blank-space) | Uses the TypeScript parser | 76 KB plus TypeScript at 24 MB | About 2x faster on most code, slower on type-heavy files | Reports an error                                         |
+| [ts-blank-space](https://github.com/bloomberg/ts-blank-space) | Uses the TypeScript parser | 76 KB plus TypeScript at 24 MB | About 2x faster on most code, slower on type-heavy files | Calls your `onError` callback, otherwise left in place silently |
 | tsc, esbuild, bundlers         | Full compilers                        | Varies                           | Not measured                                              | None, but they need a build step                         |
 
 Speed figures come from the [benchmarks](#benchmarks) below.
@@ -28,7 +28,7 @@ Speed figures come from the [benchmarks](#benchmarks) below.
 
 What you give up with ts-erase:
 
-- **No parser.** It decides what is a type with heuristics, so unusual code can be misread. On 2174 real-world files its output matched `stripTypeScriptTypes` on 2168, and the other 6 differ only in comments. A misread can still produce valid JavaScript that behaves differently.
+- **No parser.** It decides what is a type with heuristics, so unusual code can be misread. On 2175 real-world files its output matched `stripTypeScriptTypes` on 2169, and the other 6 differ only in comments. A misread can still produce valid JavaScript that behaves differently.
 - **Later failures.** Syntax that can't be erased, such as `constructor(private x: string)` or `enum`, is left in the output, so you see a syntax error at runtime rather than a clear error from the tool.
 - **Slower on most code.** It is only ahead on files that are mostly types.
 
@@ -160,38 +160,38 @@ On Mac M1 Air, Node.js 24.9.0:
 Warmup: 500 iterations, Bench: 5000 iterations
 
 --- annotation-heavy.ts (4323 bytes) ---
-  eraseTsTypes        : 0.3850ms/op (2,597 ops/s)
-  amaro               : 0.1616ms/op (6,189 ops/s)
-  ts-blank-space      : 0.2080ms/op (4,808 ops/s)
-  stripTypeScriptTypes: 0.1792ms/op (5,582 ops/s)
+  eraseTsTypes        : 0.3906ms/op (2,560 ops/s)
+  amaro               : 0.1642ms/op (6,088 ops/s)
+  ts-blank-space      : 0.2086ms/op (4,793 ops/s)
+  stripTypeScriptTypes: 0.1783ms/op (5,609 ops/s)
   eraseTsTypes vs amaro:                0.42x slower
-  eraseTsTypes vs ts-blank-space:       0.54x slower
-  eraseTsTypes vs stripTypeScriptTypes: 0.47x slower
+  eraseTsTypes vs ts-blank-space:       0.53x slower
+  eraseTsTypes vs stripTypeScriptTypes: 0.46x slower
 
 --- mixed.ts (6120 bytes) ---
-  eraseTsTypes        : 0.5331ms/op (1,876 ops/s)
-  amaro               : 0.1789ms/op (5,590 ops/s)
-  ts-blank-space      : 0.2742ms/op (3,647 ops/s)
-  stripTypeScriptTypes: 0.1935ms/op (5,167 ops/s)
-  eraseTsTypes vs amaro:                0.34x slower
+  eraseTsTypes        : 0.5503ms/op (1,817 ops/s)
+  amaro               : 0.1910ms/op (5,236 ops/s)
+  ts-blank-space      : 0.2780ms/op (3,597 ops/s)
+  stripTypeScriptTypes: 0.2049ms/op (4,880 ops/s)
+  eraseTsTypes vs amaro:                0.35x slower
   eraseTsTypes vs ts-blank-space:       0.51x slower
-  eraseTsTypes vs stripTypeScriptTypes: 0.36x slower
+  eraseTsTypes vs stripTypeScriptTypes: 0.37x slower
 
 --- plain-js.ts (2553 bytes) ---
-  eraseTsTypes        : 0.2660ms/op (3,760 ops/s)
-  amaro               : 0.0857ms/op (11,664 ops/s)
-  ts-blank-space      : 0.1247ms/op (8,018 ops/s)
-  stripTypeScriptTypes: 0.0925ms/op (10,816 ops/s)
-  eraseTsTypes vs amaro:                0.32x slower
-  eraseTsTypes vs ts-blank-space:       0.47x slower
-  eraseTsTypes vs stripTypeScriptTypes: 0.35x slower
+  eraseTsTypes        : 0.2741ms/op (3,648 ops/s)
+  amaro               : 0.0860ms/op (11,631 ops/s)
+  ts-blank-space      : 0.1241ms/op (8,056 ops/s)
+  stripTypeScriptTypes: 0.0908ms/op (11,010 ops/s)
+  eraseTsTypes vs amaro:                0.31x slower
+  eraseTsTypes vs ts-blank-space:       0.45x slower
+  eraseTsTypes vs stripTypeScriptTypes: 0.33x slower
 
 --- type-heavy.ts (3816 bytes) ---
-  eraseTsTypes        : 0.0894ms/op (11,180 ops/s)
-  amaro               : 0.1320ms/op (7,576 ops/s)
-  ts-blank-space      : 0.1541ms/op (6,490 ops/s)
-  stripTypeScriptTypes: 0.1466ms/op (6,821 ops/s)
-  eraseTsTypes vs amaro:                1.48x faster
-  eraseTsTypes vs ts-blank-space:       1.72x faster
-  eraseTsTypes vs stripTypeScriptTypes: 1.64x faster
+  eraseTsTypes        : 0.0898ms/op (11,132 ops/s)
+  amaro               : 0.1319ms/op (7,581 ops/s)
+  ts-blank-space      : 0.1528ms/op (6,545 ops/s)
+  stripTypeScriptTypes: 0.1412ms/op (7,081 ops/s)
+  eraseTsTypes vs amaro:                1.47x faster
+  eraseTsTypes vs ts-blank-space:       1.70x faster
+  eraseTsTypes vs stripTypeScriptTypes: 1.57x faster
 ```
